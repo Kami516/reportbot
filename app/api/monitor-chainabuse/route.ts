@@ -1,341 +1,401 @@
-// app/api/monitor-chainabuse/route.ts - Working Solution Monitor
+// app/api/monitor-chainabuse/route.ts - Fixed Selenium Monitor
 import { NextRequest, NextResponse } from 'next/server';
+import { Builder, By, WebDriver, until } from 'selenium-webdriver';
+import chrome from 'selenium-webdriver/chrome';
 
-const { Builder, By, until } = require('selenium-webdriver');
-const chrome = require('selenium-webdriver/chrome');
-
-interface ReportData {
+interface ChainAbuseReport {
   id: string;
   title: string;
-  description: string;
-  timestamp: string;
   submittedBy: string;
-  reportedDomain?: string;
-  url?: string;
-  source?: string;
+  timeAgo: string;
+  addresses: string[];
+  extractedAt: string;
+  confidence: number;
+  method: string;
 }
 
-class WorkingSolutionMonitor {
+class FixedSeleniumMonitor {
   private telegramBotToken: string;
   private telegramChatId: string;
-  private lastKnownReports: Set<string> = new Set();
+  private lastReportIds: Set<string> = new Set();
   private checkCount: number = 0;
-  private isFirstRun: boolean = true;
-  private driver: any = null;
+  private isInitialized: boolean = false;
+  private driver: WebDriver | null = null;
 
   constructor() {
     this.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN!;
     this.telegramChatId = process.env.TELEGRAM_CHAT_ID!;
   }
 
-  private async initDriver() {
-    if (this.driver) return;
+  private async initializeDriver(): Promise<WebDriver> {
+    if (this.driver) return this.driver;
 
-    try {
-      console.log('🚀 Initializing Working Solution Monitor...');
-      
-      const options = new chrome.Options();
-      options.addArguments('--headless=new');
-      options.addArguments('--no-sandbox');
-      options.addArguments('--disable-dev-shm-usage');
-      options.addArguments('--window-size=1920,1080');
-      options.addArguments('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-      
-      // Advanced options for better JavaScript support
-      options.addArguments('--disable-blink-features=AutomationControlled');
-      options.addArguments('--disable-features=VizDisplayCompositor');
-      options.excludeSwitches(['enable-automation']);
-      options.addArguments('--disable-background-timer-throttling');
-      options.addArguments('--disable-backgrounding-occluded-windows');
-      options.addArguments('--disable-renderer-backgrounding');
-      
-      // NO PROXY - based on test results proxy doesn't work
-      console.log('⚠️ Running WITHOUT proxy (proxy returned 503)');
+    console.log('🔧 Initializing Fixed Chrome WebDriver...');
+    
+    const options = new chrome.Options();
+    
+    // Podstawowe opcje
+    options.addArguments('--headless');
+    options.addArguments('--no-sandbox');
+    options.addArguments('--disable-dev-shm-usage');
+    options.addArguments('--disable-gpu');
+    options.addArguments('--window-size=1366,768');
+    
+    // User agent jako string
+    const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    options.addArguments(`--user-agent=${userAgent}`);
+    
+    // Wyłącz automatyzację
+    options.addArguments('--disable-blink-features=AutomationControlled');
+    options.addArguments('--disable-extensions');
+    
+    // Preferencje
+    const prefs = {
+      'profile.default_content_setting_values.notifications': 2,
+      'profile.managed_default_content_settings.images': 1
+    };
+    options.setUserPreferences(prefs);
 
-      // Find ChromeDriver
-      const possibleDriverPaths = [
-        '/opt/homebrew/bin/chromedriver',
-        '/usr/local/bin/chromedriver',
-        '/usr/bin/chromedriver'
-      ];
+    this.driver = await new Builder()
+      .forBrowser('chrome')
+      .setChromeOptions(options)
+      .build();
 
-      let driverPath = null;
-      for (const path of possibleDriverPaths) {
-        try {
-          const fs = require('fs');
-          if (fs.existsSync(path)) {
-            driverPath = path;
-            break;
-          }
-        } catch (e) { continue; }
-      }
+    // Ukryj webdriver property
+    await this.driver.executeScript(`
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      });
+    `);
 
-      let service = null;
-      if (driverPath) {
-        service = new chrome.ServiceBuilder(driverPath);
-      }
-
-      const builder = new Builder()
-        .forBrowser('chrome')
-        .setChromeOptions(options);
-
-      if (service) builder.setChromeService(service);
-
-      this.driver = await builder.build();
-
-      // Hide webdriver property
-      await this.driver.executeScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
-
-      console.log('✅ Working Solution Monitor initialized (no proxy)');
-    } catch (error: any) {
-      console.error('💥 Driver initialization failed:', error.message);
-      throw error;
-    }
+    console.log('✅ Fixed Chrome WebDriver initialized');
+    return this.driver;
   }
 
-  private async waitForReportsToLoad(): Promise<void> {
-    console.log('⏳ Waiting for reports to load...');
-    
-    let attempts = 0;
-    const maxAttempts = 30; // 30 seconds
-    let reportsLoaded = false;
-    
-    while (!reportsLoaded && attempts < maxAttempts) {
-      try {
-        const pageState = await this.driver.executeScript(`
+  private async fetchReportsWithSelenium(): Promise<ChainAbuseReport[]> {
+    const reports: ChainAbuseReport[] = [];
+    const extractedAt = new Date().toISOString();
+
+    try {
+      const driver = await this.initializeDriver();
+      
+      console.log('🔄 Loading ChainAbuse reports page...');
+      
+      // Idź bezpośrednio na stronę reports
+      const timestamp = Date.now();
+      const url = `https://www.chainabuse.com/reports?sort=newest&_t=${timestamp}`;
+      
+      await driver.get(url);
+      
+      // Czekaj na podstawowe elementy
+      console.log('⏳ Waiting for page to load...');
+      await driver.wait(until.elementLocated(By.tagName('body')), 15000);
+      await driver.wait(until.elementLocated(By.id('__next')), 10000);
+      
+      // Czekaj na załadowanie
+      let attempts = 0;
+      const maxAttempts = 20; // 10 sekund
+      
+      while (attempts < maxAttempts) {
+        await driver.sleep(500);
+        
+        const pageInfo = await driver.executeScript(`
           return {
-            bodyLength: document.body.innerText.length,
-            hasSubmittedBy: document.body.innerText.includes('Submitted by'),
-            hasMinutesAgo: /\\d+\\s+minutes?\\s+ago/i.test(document.body.innerText),
-            hasHoursAgo: /\\d+\\s+hours?\\s+ago/i.test(document.body.innerText),
-            hasDaysAgo: /\\d+\\s+days?\\s+ago/i.test(document.body.innerText),
-            hasScamWords: /scam|phishing|fraud/i.test(document.body.innerText),
-            reportElements: document.querySelectorAll('[class*="Report"], [class*="Card"], [class*="report"], [class*="card"]').length,
-            readyState: document.readyState,
-            hasError: document.body.innerText.includes('error') || document.body.innerText.includes('Error'),
-            title: document.title
+            textLength: document.body.innerText.length,
+            hasContent: document.body.innerText.length > 2000,
+            hasSubmitted: document.body.innerText.includes('Submitted'),
+            hasAgo: document.body.innerText.includes(' ago'),
+            title: document.title,
+            url: window.location.href
           };
         `);
         
-        // Success conditions
-        if ((pageState.hasSubmittedBy && (pageState.hasMinutesAgo || pageState.hasHoursAgo || pageState.hasDaysAgo)) ||
-            (pageState.hasScamWords && pageState.reportElements > 0) ||
-            pageState.bodyLength > 20000) {
-          reportsLoaded = true;
-          console.log(`✅ Reports loaded after ${attempts + 1} attempts`);
-          console.log(`📊 Page state: bodyLength=${pageState.bodyLength}, submittedBy=${pageState.hasSubmittedBy}, timeRefs=${pageState.hasMinutesAgo || pageState.hasHoursAgo}, elements=${pageState.reportElements}`);
-        } else {
-          attempts++;
-          console.log(`🔄 Waiting attempt ${attempts}/${maxAttempts} - bodyLength: ${pageState.bodyLength}, hasSubmittedBy: ${pageState.hasSubmittedBy}, title: ${pageState.title}`);
-          await this.driver.sleep(1000);
-        }
-      } catch (e: any) {
-        console.log(`⚠️ Error checking page state: ${e.message}`);
         attempts++;
-        await this.driver.sleep(1000);
+        const info = pageInfo as any;
+        
+        console.log(`📊 Attempt ${attempts}: ${info.textLength} chars, hasSubmitted: ${info.hasSubmitted}, hasAgo: ${info.hasAgo}`);
+        
+        if (info.hasContent || info.hasSubmitted || info.hasAgo) {
+          console.log('✅ Content detected!');
+          break;
+        }
+      }
+      
+      // Metoda 1: Wyciągnij przez JavaScript
+      console.log('🔍 Method 1: JavaScript extraction...');
+      const jsReports = await this.extractFromJavaScript(driver, extractedAt);
+      reports.push(...jsReports);
+      
+      // Metoda 2: Znajdź elementy
+      if (reports.length === 0) {
+        console.log('🔍 Method 2: Element extraction...');
+        const elementReports = await this.extractFromElements(driver, extractedAt);
+        reports.push(...elementReports);
+      }
+      
+      // Metoda 3: Parsuj tekst
+      if (reports.length === 0) {
+        console.log('🔍 Method 3: Text extraction...');
+        const textReports = await this.extractFromText(driver, extractedAt);
+        reports.push(...textReports);
+      }
+      
+      // Metoda 4: Debug
+      if (reports.length === 0) {
+        console.log('🔍 Method 4: Full debug...');
+        await this.performDebugAnalysis(driver);
+      }
+      
+      console.log(`🔍 Fixed Selenium extracted ${reports.length} reports total`);
+      return this.deduplicateReports(reports);
+      
+    } catch (error) {
+      console.error('💥 Fixed Selenium error:', error);
+      return [];
+    }
+  }
+
+  private async extractFromJavaScript(driver: WebDriver, extractedAt: string): Promise<ChainAbuseReport[]> {
+    const reports: ChainAbuseReport[] = [];
+    
+    try {
+      const jsResult = await driver.executeScript(`
+        const data = {
+          page: {
+            title: document.title,
+            url: window.location.href,
+            textLength: document.body.innerText.length,
+            bodyText: document.body.innerText.substring(0, 2000)
+          },
+          nextData: null,
+          patterns: {
+            submitted: (document.body.innerText.match(/submitted/gi) || []).length,
+            ago: (document.body.innerText.match(/\\d+\\s+(?:minute|hour|day)s?\\s+ago/gi) || []).length,
+            scam: (document.body.innerText.match(/scam/gi) || []).length
+          }
+        };
+        
+        if (window.__NEXT_DATA__) {
+          data.nextData = {
+            page: window.__NEXT_DATA__.page,
+            hasProps: !!window.__NEXT_DATA__.props,
+            propsKeys: window.__NEXT_DATA__.props ? Object.keys(window.__NEXT_DATA__.props) : []
+          };
+        }
+        
+        return data;
+      `);
+      
+      const data = jsResult as any;
+      console.log(`📊 JavaScript data: ${data.page.textLength} chars, patterns:`, data.patterns);
+      
+      // Jeśli są wzorce, spróbuj parsować tekst
+      if (data.patterns.submitted > 0 || data.patterns.ago > 0) {
+        const textReports = this.parseTextForReports(data.page.bodyText, extractedAt, 'JavaScript');
+        reports.push(...textReports);
+      }
+      
+    } catch (jsError) {
+      console.log('⚠️ JavaScript extraction failed:', jsError);
+    }
+    
+    return reports;
+  }
+
+  private async extractFromElements(driver: WebDriver, extractedAt: string): Promise<ChainAbuseReport[]> {
+    const reports: ChainAbuseReport[] = [];
+    
+    try {
+      const selectors = [
+        '[class*="Card"]',
+        '[class*="Report"]',
+        '[class*="Item"]',
+        'article',
+        'li[class]',
+        'div[class*="create"]',
+        'div[class]'
+      ];
+      
+      for (const selector of selectors) {
+        try {
+          const elements = await driver.findElements(By.css(selector));
+          
+          if (elements.length > 0) {
+            console.log(`🔍 Found ${elements.length} elements with ${selector}`);
+            
+            for (let i = 0; i < Math.min(elements.length, 15); i++) {
+              try {
+                const element = elements[i];
+                const text = await element.getText();
+                
+                if (text && text.length > 30 && (
+                  text.includes('Submitted') || 
+                  text.includes('ago') || 
+                  text.includes('Scam')
+                )) {
+                  console.log(`📝 Element ${i}: ${text.substring(0, 100)}...`);
+                  
+                  const elementReports = this.parseTextForReports(text, extractedAt, `Element_${selector}`);
+                  reports.push(...elementReports);
+                }
+              } catch (elementError) {
+                // Kontynuuj z następnym
+              }
+            }
+            
+            if (reports.length > 0) break;
+          }
+        } catch (selectorError) {
+          // Kontynuuj z następnym selektorem
+        }
+      }
+    } catch (error) {
+      console.log('⚠️ Element extraction failed:', error);
+    }
+    
+    return reports;
+  }
+
+  private async extractFromText(driver: WebDriver, extractedAt: string): Promise<ChainAbuseReport[]> {
+    const reports: ChainAbuseReport[] = [];
+    
+    try {
+      const pageText = await driver.executeScript('return document.body.innerText') as string;
+      
+      console.log(`📄 Full page text: ${pageText.length} characters`);
+      
+      if (pageText.length > 500) {
+        const textReports = this.parseTextForReports(pageText, extractedAt, 'FullText');
+        reports.push(...textReports);
+      }
+      
+    } catch (error) {
+      console.log('⚠️ Text extraction failed:', error);
+    }
+    
+    return reports;
+  }
+
+  private async performDebugAnalysis(driver: WebDriver): Promise<void> {
+    try {
+      console.log('🔍 PERFORMING FULL DEBUG ANALYSIS...');
+      
+      const debugInfo = await driver.executeScript(`
+        return {
+          basic: {
+            title: document.title,
+            url: window.location.href,
+            domain: document.domain,
+            readyState: document.readyState
+          },
+          content: {
+            bodyTextLength: document.body.innerText.length,
+            bodyHTMLLength: document.body.innerHTML.length,
+            bodyTextStart: document.body.innerText.substring(0, 1000),
+            hasNextData: !!window.__NEXT_DATA__
+          },
+          elements: {
+            divs: document.querySelectorAll('div').length,
+            spans: document.querySelectorAll('span').length,
+            paragraphs: document.querySelectorAll('p').length,
+            articles: document.querySelectorAll('article').length,
+            links: document.querySelectorAll('a').length
+          },
+          classes: Array.from(new Set(
+            Array.from(document.querySelectorAll('[class]'))
+              .map(el => el.className)
+              .join(' ')
+              .split(' ')
+              .filter(c => c.length > 0)
+          )).slice(0, 30),
+          scripts: document.querySelectorAll('script').length
+        };
+      `);
+      
+      console.log('🔍 FULL DEBUG RESULT:');
+      console.log(JSON.stringify(debugInfo, null, 2));
+      
+    } catch (debugError) {
+      console.log('⚠️ Debug analysis failed:', debugError);
+    }
+  }
+
+  private parseTextForReports(text: string, extractedAt: string, method: string): ChainAbuseReport[] {
+    const reports: ChainAbuseReport[] = [];
+    
+    // Szukaj wzorców
+    const patterns = [
+      /Submitted by\s+([^0-9\n\r]+?)\s*(\d+\s+(?:minute|hour|day)s?\s+ago)/gi,
+      /(Phishing|Scam|Fraud)\s.*?(\d+\s+(?:minute|hour|day)s?\s+ago)/gi,
+      /(\d+\s+(?:minute|hour|day)s?\s+ago).*?(Phishing|Scam|Fraud)/gi
+    ];
+    
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        let submittedBy = 'Unknown';
+        let timeAgo = 'Unknown';
+        let title = 'Report';
+        
+        if (match[1] && match[2]) {
+          if (match[1].includes('minute') || match[1].includes('hour') || match[1].includes('day')) {
+            timeAgo = match[1];
+            title = match[2] + ' Report';
+          } else {
+            submittedBy = match[1].trim();
+            timeAgo = match[2];
+          }
+        }
+        
+        if (timeAgo !== 'Unknown') {
+          const report: ChainAbuseReport = {
+            id: `${method}_${Date.now()}_${Math.random()}`,
+            title,
+            submittedBy,
+            timeAgo,
+            addresses: this.extractAddresses(text),
+            extractedAt,
+            confidence: 75,
+            method
+          };
+          
+          reports.push(report);
+        }
       }
     }
     
-    if (!reportsLoaded) {
-      console.log('⚠️ Reports may not have loaded completely after 30 seconds');
-    }
-    
-    // Extra wait for any final loading
-    await this.driver.sleep(3000);
+    return reports;
   }
 
-  private async getReportsWithWorkingSolution(): Promise<{ reports: ReportData[], debug: any }> {
-    try {
-      await this.initDriver();
-      
-      console.log('🌐 Navigating to ChainAbuse reports (without proxy)...');
-      await this.driver.get('https://www.chainabuse.com/reports?sort=newest');
-      
-      // Wait for React/Next.js to load completely
-      await this.waitForReportsToLoad();
-      
-      console.log('🔍 Extracting reports with enhanced methods...');
-      
-      // Enhanced extraction with multiple methods
-      const extractionResult = await this.driver.executeScript(`
-        const reports = [];
-        const debug = {
-          pageTitle: document.title,
-          currentUrl: window.location.href,
-          bodyTextLength: document.body.innerText.length,
-          bodyHtmlLength: document.body.innerHTML.length,
-          nextDataExists: !!document.getElementById('__NEXT_DATA__'),
-          reactRootExists: !!document.querySelector('[data-reactroot]'),
-          extractionMethods: {},
-          foundElements: {},
-          patterns: {},
-          samples: {}
-        };
+  private extractAddresses(text: string): string[] {
+    const addresses: string[] = [];
+    
+    // Bitcoin addresses
+    const bitcoinPattern = /\b(?:bc1|[13])[a-zA-Z0-9]{25,62}\b/g;
+    const bitcoinMatches = text.match(bitcoinPattern);
+    if (bitcoinMatches) addresses.push(...bitcoinMatches);
+    
+    // Ethereum addresses
+    const ethereumPattern = /\b0x[a-fA-F0-9]{40}\b/g;
+    const ethereumMatches = text.match(ethereumPattern);
+    if (ethereumMatches) addresses.push(...ethereumMatches);
+    
+    return [...new Set(addresses)];
+  }
 
-        try {
-          const bodyText = document.body.innerText || '';
-          const bodyHtml = document.body.innerHTML || '';
-          
-          debug.samples.bodyTextStart = bodyText.substring(0, 2000);
-          debug.samples.bodyHtmlStart = bodyHtml.substring(0, 2000);
-          
-          // Method 1: Direct pattern search
-          const timePattern = /(\\d+)\\s+(minute|hour|day)s?\\s+ago/gi;
-          const submittedPattern = /Submitted\\s+by\\s+([A-Za-z0-9_]+)/gi;
-          const scamPattern = /(Phishing|Bitcoin|Ethereum|Crypto|Investment|Romance|Fraud)?\\s*Scam/gi;
-          
-          const timeMatches = Array.from(bodyText.matchAll(timePattern));
-          const submittedMatches = Array.from(bodyText.matchAll(submittedPattern));
-          const scamMatches = Array.from(bodyText.matchAll(scamPattern));
-          
-          debug.patterns = {
-            timeMatches: timeMatches.length,
-            submittedMatches: submittedMatches.length,
-            scamMatches: scamMatches.length
-          };
-          
-          debug.extractionMethods.directPattern = {
-            timeMatches: timeMatches.map(m => m[0]),
-            submittedMatches: submittedMatches.map(m => m[1]),
-            scamMatches: scamMatches.map(m => m[0])
-          };
-          
-          // Create reports from direct patterns
-          const maxReports = Math.min(timeMatches.length, submittedMatches.length, 20);
-          for (let i = 0; i < maxReports; i++) {
-            if (timeMatches[i] && submittedMatches[i]) {
-              const timestamp = timeMatches[i][0];
-              const submittedBy = submittedMatches[i][1];
-              const title = scamMatches[i] ? scamMatches[i][0] : 'Scam Report';
-              
-              const id = 'direct_' + i + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-              
-              reports.push({
-                id: id,
-                title: title,
-                description: 'Report found via direct pattern matching',
-                timestamp: timestamp,
-                submittedBy: submittedBy,
-                source: 'DirectPattern'
-              });
-            }
-          }
-          
-          // Method 2: Element-based search
-          const allElements = document.querySelectorAll('*');
-          let elementReports = 0;
-          
-          for (let i = 0; i < Math.min(allElements.length, 1000); i++) {
-            const element = allElements[i];
-            const text = element.innerText || element.textContent || '';
-            
-            if (text.length > 20 && text.length < 1000) {
-              const submittedMatch = text.match(/Submitted\\s+by\\s+([A-Za-z0-9_]+)/i);
-              const timeMatch = text.match(/(\\d+)\\s+(minute|hour|day)s?\\s+ago/i);
-              
-              if (submittedMatch && timeMatch) {
-                const id = 'element_' + elementReports + '_' + Date.now();
-                const existing = reports.find(r => r.submittedBy === submittedMatch[1] && r.timestamp === timeMatch[0]);
-                
-                if (!existing) {
-                  reports.push({
-                    id: id,
-                    title: 'Element Scam Report',
-                    description: text.substring(0, 200),
-                    timestamp: timeMatch[0],
-                    submittedBy: submittedMatch[1],
-                    source: 'ElementSearch'
-                  });
-                  elementReports++;
-                }
-              }
-            }
-          }
-          
-          debug.extractionMethods.elementSearch = { foundElements: elementReports };
-          
-          // Method 3: CSS selector search
-          const selectors = [
-            '[class*="ScamReportCard"]',
-            '[class*="create-ScamReportCard"]',
-            '[class*="report"]',
-            '[class*="Report"]',
-            '[class*="card"]',
-            '[class*="Card"]',
-            'div:contains("Submitted by")',
-            'span:contains("ago")'
-          ];
-          
-          let selectorResults = {};
-          for (const selector of selectors) {
-            try {
-              const elements = document.querySelectorAll(selector);
-              selectorResults[selector] = elements.length;
-              
-              if (elements.length > 0) {
-                debug.foundElements[selector] = elements.length;
-                
-                // Extract from these elements if they contain report data
-                for (const element of Array.from(elements).slice(0, 10)) {
-                  const text = element.innerText || element.textContent || '';
-                  const submittedMatch = text.match(/Submitted\\s+by\\s+([A-Za-z0-9_]+)/i);
-                  const timeMatch = text.match(/(\\d+)\\s+(minute|hour|day)s?\\s+ago/i);
-                  
-                  if (submittedMatch && timeMatch) {
-                    const id = 'selector_' + selector.replace(/[^a-zA-Z0-9]/g, '') + '_' + Math.random().toString(36).substr(2, 9);
-                    const existing = reports.find(r => r.submittedBy === submittedMatch[1] && r.timestamp === timeMatch[0]);
-                    
-                    if (!existing) {
-                      reports.push({
-                        id: id,
-                        title: 'Selector Scam Report',
-                        description: text.substring(0, 150),
-                        timestamp: timeMatch[0],
-                        submittedBy: submittedMatch[1],
-                        source: 'SelectorSearch'
-                      });
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-              selectorResults[selector] = 'error: ' + e.message;
-            }
-          }
-          
-          debug.extractionMethods.selectorSearch = selectorResults;
-          
-          // Method 4: Try to find Next.js data
-          const nextDataScript = document.getElementById('__NEXT_DATA__');
-          if (nextDataScript) {
-            try {
-              const nextData = JSON.parse(nextDataScript.textContent || '{}');
-              debug.nextData = {
-                page: nextData.page,
-                hasProps: !!nextData.props,
-                runtimeConfig: nextData.runtimeConfig
-              };
-            } catch (e) {
-              debug.nextData = { error: 'Parse failed' };
-            }
-          }
-          
-        } catch (error) {
-          debug.error = error.message;
-        }
-        
-        return { reports, debug };
-      `);
-
-      console.log(`📊 Enhanced extraction complete: ${extractionResult.reports.length} reports found`);
-      console.log(`🔍 Methods: Direct=${extractionResult.debug.patterns.timeMatches}, Element=${extractionResult.debug.extractionMethods.elementSearch?.foundElements || 0}, Selector=${Object.keys(extractionResult.debug.foundElements || {}).length}`);
+  private deduplicateReports(reports: ChainAbuseReport[]): ChainAbuseReport[] {
+    const seen = new Map<string, ChainAbuseReport>();
+    
+    for (const report of reports) {
+      const key = `${report.submittedBy}_${report.timeAgo}`;
+      const existing = seen.get(key);
       
-      return extractionResult;
-      
-    } catch (error: any) {
-      console.error('💥 Enhanced extraction error:', error);
-      throw error;
+      if (!existing || existing.confidence < report.confidence) {
+        seen.set(key, report);
+      }
     }
+    
+    return Array.from(seen.values());
   }
 
   private async sendTelegramMessage(message: string): Promise<void> {
@@ -347,7 +407,7 @@ class WorkingSolutionMonitor {
           chat_id: this.telegramChatId,
           text: message,
           parse_mode: 'HTML',
-          disable_web_page_preview: false
+          disable_web_page_preview: true
         }),
       });
 
@@ -359,24 +419,27 @@ class WorkingSolutionMonitor {
       console.log('✅ Telegram message sent');
     } catch (error: any) {
       console.error('❌ Telegram error:', error.message);
-      throw error;
     }
   }
 
-  private formatReportMessage(report: ReportData): string {
-    const timestamp = new Date().toLocaleString('pl-PL');
-    
-    let message = `🚨 <b>NOWY RAPORT CHAINABUSE!</b>\n\n`;
-    message += `📝 <b>Typ:</b> ${report.title}\n`;
-    message += `📄 <b>Opis:</b> ${report.description}\n`;
-    message += `⏰ <b>Zgłoszony:</b> ${report.timestamp}\n`;
-    message += `👤 <b>Przez:</b> ${report.submittedBy}\n`;
-    message += `🔗 <b>Link:</b> https://www.chainabuse.com/reports\n`;
-    message += `\n🤖 <i>Wykryto: ${timestamp}</i>`;
-    message += `\n🔍 <i>Metoda: ${report.source}</i>`;
-    message += `\n⚡ <i>Working Solution v1.0</i>`;
+  private async sendNewReportAlert(report: ChainAbuseReport): Promise<void> {
+    const addressesText = report.addresses.length > 0 
+      ? `\n💰 <b>Adresy:</b> ${report.addresses.slice(0, 2).map(addr => `<code>${addr}</code>`).join(', ')}`
+      : '';
 
-    return message;
+    const message = `🚨 <b>NOWY RAPORT ChainAbuse!</b>
+
+📋 <b>Typ:</b> ${report.title}
+👤 <b>Zgłosił:</b> ${report.submittedBy}
+⏰ <b>Kiedy:</b> ${report.timeAgo}
+🔧 <b>Metoda:</b> ${report.method}
+🎯 <b>Pewność:</b> ${report.confidence}%${addressesText}
+
+🔗 <b>Sprawdź:</b> https://www.chainabuse.com/reports
+
+⚡ <i>Fixed Selenium Monitor v4.0</i>`;
+
+    await this.sendTelegramMessage(message);
   }
 
   public async checkForNewReports(): Promise<{ newReports: number; success: boolean; debug?: any }> {
@@ -384,130 +447,131 @@ class WorkingSolutionMonitor {
       const currentTime = new Date();
       this.checkCount++;
       
-      console.log(`🚀 Working Solution check #${this.checkCount}: ${currentTime.toLocaleTimeString('pl-PL')}`);
+      console.log(`🚀 Fixed Selenium Monitor check #${this.checkCount}: ${currentTime.toLocaleTimeString()}`);
       
-      const { reports, debug } = await this.getReportsWithWorkingSolution();
+      const currentReports = await this.fetchReportsWithSelenium();
       
-      const fullDebug = {
+      const debug = {
         checkNumber: this.checkCount,
-        isFirstRun: this.isFirstRun,
-        extractedReports: reports.length,
-        knownReportsCount: this.lastKnownReports.size,
-        enhancedDebug: debug,
-        reportSummary: reports.map(r => ({ 
-          id: r.id, 
-          title: r.title, 
-          timestamp: r.timestamp, 
-          by: r.submittedBy,
-          source: r.source
+        isInitialized: this.isInitialized,
+        currentReportsCount: currentReports.length,
+        knownReportsCount: this.lastReportIds.size,
+        methods: currentReports.reduce((acc: any, r) => {
+          acc[r.method] = (acc[r.method] || 0) + 1;
+          return acc;
+        }, {}),
+        samples: currentReports.slice(0, 3).map(r => ({
+          title: r.title,
+          submittedBy: r.submittedBy,
+          method: r.method,
+          confidence: r.confidence
         }))
       };
 
-      // Pierwsze uruchomienie
-      if (this.isFirstRun) {
-        reports.forEach(report => this.lastKnownReports.add(report.id));
-        this.isFirstRun = false;
+      if (!this.isInitialized) {
+        console.log(`📋 First run - saving ${currentReports.length} reports as baseline`);
         
-        const debugText = `🔍 <b>Working Solution Monitor uruchomiony!</b>\n\n` +
-          `📊 <b>Stan początkowy:</b>\n` +
-          `• Raporty znalezione: ${reports.length}\n` +
-          `• Strona: ${debug.pageTitle}\n` +
-          `• URL: ${debug.currentUrl}\n` +
-          `• Tekst body: ${debug.bodyTextLength} znaków\n` +
-          `• HTML body: ${debug.bodyHtmlLength} znaków\n` +
-          `• Next.js data: ${debug.nextDataExists ? '✅' : '❌'}\n` +
-          `• React root: ${debug.reactRootExists ? '✅' : '❌'}\n\n` +
-          `🎯 <b>Wzorce znalezione:</b>\n` +
-          `• "X ago": ${debug.patterns?.timeMatches || 0}\n` +
-          `• "Submitted by": ${debug.patterns?.submittedMatches || 0}\n` +
-          `• "Scam": ${debug.patterns?.scamMatches || 0}\n\n` +
-          `🔧 <b>Metody extraction:</b>\n` +
-          `• Direct Pattern: ${debug.patterns?.timeMatches || 0} matches\n` +
-          `• Element Search: ${debug.extractionMethods?.elementSearch?.foundElements || 0} elements\n` +
-          `• Selector Search: ${Object.keys(debug.foundElements || {}).length} selectors\n\n` +
-          `⚠️ <b>Proxy wyłączony</b> (503 error)\n` +
-          `🌐 <b>Direct connection working</b>\n\n`;
-        
-        await this.sendTelegramMessage(debugText + `⚡ <i>Working Solution Monitor v1.0</i>`);
-        
-        // Send detailed sample if content found
-        if (debug.samples?.bodyTextStart && debug.samples.bodyTextStart.length > 100) {
-          const sampleText = `📄 <b>Próbka tekstu ze strony:</b>\n\n<code>${debug.samples.bodyTextStart.substring(0, 1000)}</code>`;
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          await this.sendTelegramMessage(sampleText);
+        for (const report of currentReports) {
+          this.lastReportIds.add(report.id);
         }
         
-        return { newReports: 0, success: true, debug: fullDebug };
+        this.isInitialized = true;
+        
+        await this.sendTelegramMessage(
+          `🔍 <b>Fixed Selenium Monitor v4.0 uruchomiony!</b>
+
+📊 <b>Stan bazowy:</b>
+• Znalezionych raportów: ${currentReports.length}
+• Użyte metody: ${Object.keys(debug.methods).join(', ') || 'Brak'}
+
+🔧 <b>Funkcje:</b>
+• Chrome WebDriver z JavaScript rendering
+• 4 metody wykrywania (JS → Elements → Text → Debug)
+• Pattern matching dla różnych formatów
+• Pełna analiza debug
+
+🔄 <b>Monitoring aktywny</b>
+
+⚡ <i>Fixed Selenium Monitor v4.0</i>`
+        );
+        
+        return { newReports: 0, success: true, debug };
       }
 
-      // Znajdź nowe raporty
-      const newReports = reports.filter(report => !this.lastKnownReports.has(report.id));
-
-      if (newReports.length > 0) {
-        console.log(`🚨 Found ${newReports.length} new reports!`);
-        
-        for (const report of newReports) {
-          const message = this.formatReportMessage(report);
-          await this.sendTelegramMessage(message);
-          this.lastKnownReports.add(report.id);
-          
-          if (newReports.length > 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
+      const newReports: ChainAbuseReport[] = [];
+      
+      for (const report of currentReports) {
+        if (!this.lastReportIds.has(report.id)) {
+          newReports.push(report);
+          this.lastReportIds.add(report.id);
         }
-        
-        return { newReports: newReports.length, success: true, debug: fullDebug };
-      } else {
-        console.log('ℹ️ No new reports found');
-        const currentIds = new Set(reports.map(r => r.id));
-        this.lastKnownReports = currentIds;
-        return { newReports: 0, success: true, debug: fullDebug };
       }
+
+      console.log(`🔍 Found ${newReports.length} new reports`);
+
+      for (const report of newReports) {
+        await this.sendNewReportAlert(report);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      return { 
+        newReports: newReports.length, 
+        success: true, 
+        debug: {
+          ...debug,
+          newReportsDetails: newReports.map(r => ({
+            title: r.title,
+            method: r.method,
+            confidence: r.confidence
+          }))
+        }
+      };
 
     } catch (error: any) {
-      console.error('💥 Working Solution Monitor error:', error);
+      console.error('💥 Fixed Selenium Monitor error:', error);
       return { 
         newReports: 0, 
         success: false, 
         debug: { 
           error: error.message, 
-          checkNumber: this.checkCount 
+          checkNumber: this.checkCount
         } 
       };
     }
   }
 
-  public async cleanup() {
+  public async cleanup(): Promise<void> {
     if (this.driver) {
       try {
         await this.driver.quit();
-        console.log('🔧 Working solution driver closed');
+        this.driver = null;
+        console.log('✅ WebDriver closed');
       } catch (error) {
-        console.log('⚠️ Error closing driver:', error);
+        console.error('⚠️ Error closing WebDriver:', error);
       }
     }
   }
 }
 
-// Global instance
-let workingMonitor: WorkingSolutionMonitor | null = null;
+// Globalna instancja
+let monitor: FixedSeleniumMonitor | null = null;
 
 export async function POST(request: NextRequest) {
   try {
     if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
       return NextResponse.json({ 
-        error: 'Missing Telegram configuration',
+        error: 'Brak konfiguracji Telegram',
         success: false,
         newReports: 0
       }, { status: 500 });
     }
 
-    if (!workingMonitor) {
-      console.log('🔧 Initializing Working Solution Monitor...');
-      workingMonitor = new WorkingSolutionMonitor();
+    if (!monitor) {
+      console.log('🔧 Inicjalizacja Fixed Selenium Monitor...');
+      monitor = new FixedSeleniumMonitor();
     }
 
-    const result = await workingMonitor.checkForNewReports();
+    const result = await monitor.checkForNewReports();
     
     return NextResponse.json({
       success: result.success,
@@ -519,7 +583,7 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('💥 API Error:', error);
     return NextResponse.json({ 
-      error: 'Internal server error',
+      error: 'Błąd wewnętrzny serwera',
       message: error.message,
       success: false,
       newReports: 0,
@@ -530,18 +594,16 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   return NextResponse.json({
-    status: 'Working Solution ChainAbuse Monitor - No Proxy + Enhanced JS',
+    status: 'Fixed Selenium Monitor v4.0',
     timestamp: new Date().toISOString(),
-    version: 'working-v1.0',
+    version: 'fixed-selenium-v4.0',
     features: [
-      'No proxy (direct connection)',
-      'Enhanced JavaScript execution',
-      'Multiple extraction methods',
-      'Pattern matching',
-      'Element-based search', 
-      'CSS selector search',
-      'Extended wait times',
-      'Detailed debugging'
+      'Chrome WebDriver without TypeScript errors',
+      'JavaScript rendering and content extraction',
+      '4-method detection system',
+      'Advanced pattern matching',
+      'Full debug analysis',
+      'Clean TypeScript implementation'
     ]
   });
 }
