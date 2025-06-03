@@ -1,124 +1,180 @@
-// app/api/debug-html/route.ts - Uproszczona wersja bez błędów TypeScript
+// app/api/debug-html/route.ts - Puppeteer Debug Version
 import { NextRequest, NextResponse } from 'next/server';
-import { parseProxyConfig, fetchWithProxy } from '../../../utils/proxy';
+import puppeteer from 'puppeteer';
 
 export async function GET() {
+  let browser;
+  
   try {
-    const proxyConfig = process.env.PROXY_CONFIG ? parseProxyConfig(process.env.PROXY_CONFIG) : undefined;
+    console.log('🔍 Starting Puppeteer debug...');
     
-    console.log('🔍 Pobieranie HTML do debugowania...');
-    
-    const url = `https://www.chainabuse.com/reports?sort=newest&_t=${Date.now()}`;
-    
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache'
-    };
-
-    const response = await fetchWithProxy(url, { headers }, proxyConfig);
-    
-    if (!response.ok) {
-      return NextResponse.json({
-        error: `HTTP ${response.status}`,
-        success: false
-      });
+    // Parse proxy config
+    let proxyConfig: any = null;
+    if (process.env.PROXY_CONFIG) {
+      const [host, port, username, password] = process.env.PROXY_CONFIG.split(':');
+      proxyConfig = { host, port: parseInt(port), username, password };
     }
 
-    const html = await response.text();
-    
-    console.log(`📄 Pobrano HTML (${html.length} znaków)`);
+    const args = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu'
+    ];
 
-    // Podstawowa analiza wzorców
-    const patterns = {
-      // Różne wzorce klas raportów
-      createScamReportCard: (html.match(/create-ScamReportCard/g) || []).length,
-      scamReportCard: (html.match(/ScamReportCard/g) || []).length,
-      reportCard: (html.match(/report.*card/gi) || []).length,
-      
-      // Wzorce "Submitted by"
-      submittedBy: (html.match(/Submitted by/g) || []).length,
-      
-      // Adresy krypto
-      bitcoinAddresses: (html.match(/\b(bc1|[13])[a-zA-Z0-9]{25,62}\b/g) || []).length,
-      ethereumAddresses: (html.match(/\b0x[a-fA-F0-9]{40}\b/g) || []).length,
-      
-      // Inne wzorce
-      divs: (html.match(/<div/g) || []).length,
-      classAttributes: (html.match(/class="/g) || []).length
-    };
+    // Add proxy if configured
+    if (proxyConfig) {
+      args.push(`--proxy-server=http://${proxyConfig.host}:${proxyConfig.port}`);
+      console.log(`🔗 Using proxy: ${proxyConfig.host}:${proxyConfig.port}`);
+    }
 
-    // Znajdź klasy związane z raportami
-    const reportClasses: string[] = [];
-    const classMatches = html.match(/class="([^"]*)"/g) || [];
-    
-    classMatches.forEach(match => {
-      const classes = match.replace(/class="([^"]*)"/, '$1').split(/\s+/);
-      classes.forEach(cls => {
-        if (cls && (
-          cls.toLowerCase().includes('report') || 
-          cls.toLowerCase().includes('scam') || 
-          cls.toLowerCase().includes('card')
-        )) {
-          if (!reportClasses.includes(cls)) {
-            reportClasses.push(cls);
-          }
-        }
-      });
+    browser = await puppeteer.launch({
+      headless: true,
+      args,
+      defaultViewport: { width: 1920, height: 1080 }
     });
 
-    // Próbki HTML
-    const samples: any = {};
+    const page = await browser.newPage();
+
+    // Set proxy authentication if needed
+    if (proxyConfig && proxyConfig.username) {
+      await page.authenticate({
+        username: proxyConfig.username,
+        password: proxyConfig.password
+      });
+      console.log('🔐 Proxy authentication set');
+    }
+
+    // Set realistic headers
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    const url = `https://www.chainabuse.com/reports?sort=newest&_t=${Date.now()}`;
+    console.log(`🔄 Loading: ${url}`);
     
-    // Pierwsza karta ScamReportCard
-    const scamCardMatch = html.match(/create-ScamReportCard[^>]*>/);
-    if (scamCardMatch) {
-      const index = html.indexOf(scamCardMatch[0]);
-      samples.firstScamCard = html.substring(Math.max(0, index - 200), index + 300);
-    }
+    // Navigate to page
+    const response = await page.goto(url, { 
+      waitUntil: 'networkidle0',
+      timeout: 30000 
+    });
+    
+    console.log(`📄 Page loaded, status: ${response?.status()}`);
 
-    // Pierwsze "Submitted by"
-    const submittedMatch = html.match(/Submitted by[^<]{0,100}/);
-    if (submittedMatch) {
-      const index = html.indexOf(submittedMatch[0]);
-      samples.firstSubmitted = html.substring(Math.max(0, index - 200), index + 300);
-    }
+    // Wait a bit for React to fully render
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Pierwszy adres Bitcoin
-    const bitcoinMatch = html.match(/\b(bc1|[13])[a-zA-Z0-9]{25,62}\b/);
-    if (bitcoinMatch) {
-      const index = html.indexOf(bitcoinMatch[0]);
-      samples.firstBitcoin = html.substring(Math.max(0, index - 200), index + 300);
-    }
+    // Try to find report elements
+    const analysis = await page.evaluate(() => {
+      // Count different selectors
+      const selectors = {
+        'create-ScamReportCard': document.querySelectorAll('.create-ScamReportCard').length,
+        'ScamReportCard': document.querySelectorAll('[class*="ScamReportCard"]').length,
+        'div[class*="report"]': document.querySelectorAll('div[class*="report" i]').length,
+        'div[class*="scam"]': document.querySelectorAll('div[class*="scam" i]').length,
+        'div[class*="card"]': document.querySelectorAll('div[class*="card" i]').length
+      };
 
-    const analysis = {
-      htmlLength: html.length,
-      timestamp: new Date().toISOString(),
-      patterns,
-      reportClasses: reportClasses.sort(),
-      samples,
-      htmlStart: html.substring(0, 1000),
-      bodyStart: html.includes('<body') ? html.substring(html.indexOf('<body'), html.indexOf('<body') + 1000) : 'No body tag found'
-    };
+      // Find all classes that might be related to reports
+      const allElements = Array.from(document.querySelectorAll('*'));
+      const reportClasses = new Set<string>();
+      
+      allElements.forEach(el => {
+        const classList = el.className;
+        if (typeof classList === 'string' && classList) {
+          classList.split(' ').forEach(cls => {
+            if (cls && (
+              cls.toLowerCase().includes('report') ||
+              cls.toLowerCase().includes('scam') ||
+              cls.toLowerCase().includes('card')
+            )) {
+              reportClasses.add(cls);
+            }
+          });
+        }
+      });
+
+      // Look for text patterns
+      const bodyText = document.body.textContent || '';
+      const patterns = {
+        'submitted by': (bodyText.match(/submitted by/gi) || []).length,
+        'ago': (bodyText.match(/\d+\s+(minutes?|hours?|days?)\s+ago/gi) || []).length,
+        'bitcoin': (bodyText.match(/bitcoin/gi) || []).length,
+        'ethereum': (bodyText.match(/ethereum/gi) || []).length,
+        'scam': (bodyText.match(/scam/gi) || []).length
+      };
+
+      // Get sample content from potential report elements
+      const potentialReports = Array.from(document.querySelectorAll('.create-ScamReportCard, [class*="ScamReportCard"], [class*="report"]'));
+      const samples = potentialReports.slice(0, 3).map((el, index) => ({
+        index,
+        tagName: el.tagName,
+        className: el.className,
+        textContent: (el.textContent || '').substring(0, 200),
+        innerHTML: (el.innerHTML || '').substring(0, 300)
+      }));
+
+      // Get page structure
+      const pageStructure = {
+        hasNextData: !!document.getElementById('__NEXT_DATA__'),
+        hasReactRoot: !!document.querySelector('[data-reactroot]'),
+        title: document.title,
+        bodyClassList: document.body.className,
+        mainContent: document.querySelector('main')?.textContent?.substring(0, 500) || 'No main element'
+      };
+
+      return {
+        selectors,
+        reportClasses: Array.from(reportClasses).sort(),
+        patterns,
+        samples,
+        pageStructure,
+        totalElements: allElements.length,
+        bodyTextLength: bodyText.length
+      };
+    });
+
+    // Get full HTML
+    const html = await page.content();
+    
+    // Take screenshot for debugging
+    const screenshot = await page.screenshot({ 
+      encoding: 'base64',
+      fullPage: false,
+      clip: { x: 0, y: 0, width: 1920, height: 1080 }
+    });
+
+    console.log(`✅ Analysis completed: ${analysis.selectors['create-ScamReportCard']} ScamReportCard elements found`);
 
     return NextResponse.json({
       success: true,
+      timestamp: new Date().toISOString(),
+      url,
+      proxyUsed: !!proxyConfig,
       analysis,
+      htmlLength: html.length,
+      htmlStart: html.substring(0, 2000),
+      screenshot: `data:image/png;base64,${screenshot}`,
       debugInfo: {
-        totalReportClasses: reportClasses.length,
-        hasScamReportCard: patterns.createScamReportCard > 0,
-        hasSubmissions: patterns.submittedBy > 0,
-        hasCryptoAddresses: patterns.bitcoinAddresses + patterns.ethereumAddresses > 0
+        foundReportElements: analysis.selectors['create-ScamReportCard'] > 0,
+        hasJavaScriptContent: analysis.pageStructure.hasNextData,
+        totalPotentialReports: analysis.selectors['create-ScamReportCard'] + analysis.selectors['ScamReportCard'],
+        textPatterns: analysis.patterns
       }
     });
 
   } catch (error: any) {
-    console.error('💥 Debug error:', error);
+    console.error('💥 Puppeteer debug error:', error);
     return NextResponse.json({
       error: error.message,
-      success: false
+      success: false,
+      stack: error.stack?.substring(0, 1000)
     }, { status: 500 });
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
 }

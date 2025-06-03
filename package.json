@@ -12,6 +12,7 @@
     "@types/selenium-webdriver": "^4.1.28",
     "https-proxy-agent": "^7.0.6",
     "next": "15.3.3",
+    "puppeteer": "^24.10.0",
     "puppeteer-core": "^24.10.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/puppeteer": "^7.0.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "tailwindcss": "^4",
