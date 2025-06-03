@@ -1,6 +1,8 @@
-// app/api/monitor-chainabuse/route.ts - Fixed Snapshot Logic
+// app/api/monitor-chainabuse/route.ts - Minimal Category Fix
 import { NextRequest, NextResponse } from 'next/server';
 import puppeteer, { Browser } from 'puppeteer';
+import { writeFileSync, readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 
 interface ReportSnapshot {
   id: string;
@@ -9,30 +11,72 @@ interface ReportSnapshot {
   timeAgo: string;
   timestamp: number;
   position: number;
-  contentHash: string; // Add content hash for better comparison
+  contentHash: string;
 }
 
 interface ReportData {
   textContent: string;
   innerHTML: string;
   position: number;
+  category: string; // Add category extraction
 }
 
 class FixedPuppeteerMonitor {
   private telegramBotToken: string;
   private telegramChatId: string;
   private lastReports: ReportSnapshot[] = [];
-  private lastReportHashes: Set<string> = new Set(); // Store hashes for quick lookup
+  private lastReportHashes: Set<string> = new Set();
+  private sentReportHashes: Set<string> = new Set();
+  private monitorStartTime: number = 0;
   private checkCount: number = 0;
   private proxyConfig: any;
+  private sentReportsFile: string;
 
   constructor() {
     this.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN!;
     this.telegramChatId = process.env.TELEGRAM_CHAT_ID!;
+    this.sentReportsFile = join(process.cwd(), 'sent-reports.json');
     
     if (process.env.PROXY_CONFIG) {
       const [host, port, username, password] = process.env.PROXY_CONFIG.split(':');
       this.proxyConfig = { host, port: parseInt(port), username, password };
+    }
+
+    // Load previously sent reports from file
+    this.loadSentReports();
+  }
+
+  private loadSentReports(): void {
+    try {
+      if (existsSync(this.sentReportsFile)) {
+        const data = readFileSync(this.sentReportsFile, 'utf8');
+        const savedData = JSON.parse(data);
+        
+        if (savedData.sentHashes && Array.isArray(savedData.sentHashes)) {
+          this.sentReportHashes = new Set(savedData.sentHashes);
+          console.log(`📂 Loaded ${this.sentReportHashes.size} previously sent report hashes from file`);
+        }
+      } else {
+        console.log(`📂 No previous sent reports file found - starting fresh`);
+      }
+    } catch (error) {
+      console.error('❌ Error loading sent reports file:', error);
+      this.sentReportHashes = new Set();
+    }
+  }
+
+  private saveSentReports(): void {
+    try {
+      const dataToSave = {
+        sentHashes: Array.from(this.sentReportHashes),
+        lastSaved: new Date().toISOString(),
+        totalSent: this.sentReportHashes.size
+      };
+      
+      writeFileSync(this.sentReportsFile, JSON.stringify(dataToSave, null, 2));
+      console.log(`💾 Saved ${this.sentReportHashes.size} sent report hashes to file`);
+    } catch (error) {
+      console.error('❌ Error saving sent reports file:', error);
     }
   }
 
@@ -86,15 +130,14 @@ class FixedPuppeteerMonitor {
   }
 
   private createContentHash(text: string): string {
-    // Create stable hash from content (ignoring dynamic elements like timestamps)
     let cleanText = text
-      .replace(/\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/gi, 'TIME_AGO') // Normalize time
-      .replace(/ago1Reported/gi, 'ago Reported') // Fix concatenated text
-      .replace(/(\w)1Reported/gi, '$1 Reported') // Fix missing spaces
-      .replace(/Domainpancakeswap/gi, 'Domain pancakeswap') // Fix domain text
-      .replace(/Domain([a-z])/gi, 'Domain $1') // Add space after Domain
-      .replace(/Submitted by\s+([^\d\n•]+?)(?:\s+\d+.*)?$/gi, 'Submitted by $1') // Clean author
-      .replace(/\s+/g, ' ') // Normalize whitespace
+      .replace(/\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/gi, 'TIME_AGO')
+      .replace(/ago1Reported/gi, 'ago Reported')
+      .replace(/(\w)1Reported/gi, '$1 Reported')
+      .replace(/Domainpancakeswap/gi, 'Domain pancakeswap')
+      .replace(/Domain([a-z])/gi, 'Domain $1')
+      .replace(/Submitted by\s+([^\d\n•]+?)(?:\s+\d+.*)?$/gi, 'Submitted by $1')
+      .replace(/\s+/g, ' ')
       .trim();
     
     let hash = 0;
@@ -108,6 +151,7 @@ class FixedPuppeteerMonitor {
 
   private createReportSnapshot(reportData: ReportData, position: number): ReportSnapshot {
     const textContent = reportData.textContent || '';
+    const category = reportData.category || '';
     
     // Clean up text - add spaces between concatenated elements
     const cleanedText = textContent
@@ -121,11 +165,9 @@ class FixedPuppeteerMonitor {
       .replace(/\s+/g, ' ')
       .trim();
     
-    // Extract time info from cleaned text
     const timeMatch = cleanedText.match(/(\d+)\s+(seconds?|minutes?|hours?|days?)\s+ago/i);
     const timeAgo = timeMatch ? timeMatch[0] : `pos_${position}`;
     
-    // Extract author - look for "Submitted by [username]"
     const authorMatch = cleanedText.match(/Submitted by\s+([^\d\n•]+?)(?:\s+\d+|$)/i);
     let author = 'unknown';
     if (authorMatch) {
@@ -135,7 +177,6 @@ class FixedPuppeteerMonitor {
         .trim();
     }
     
-    // If no "Submitted by", try to extract from pattern like "PhishFort 2 minutes ago"
     if (author === 'unknown') {
       const altAuthorMatch = cleanedText.match(/^([A-Za-z][A-Za-z0-9_]*)\s+\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/i);
       if (altAuthorMatch) {
@@ -143,7 +184,6 @@ class FixedPuppeteerMonitor {
       }
     }
     
-    // Extract main content - skip metadata lines
     const lines = cleanedText.split('\n').filter((line: string) => line.trim().length > 10);
     const contentLines = lines.filter((line: string) => {
       const trimmed = line.trim();
@@ -156,27 +196,21 @@ class FixedPuppeteerMonitor {
              trimmed.length > 20;
     });
     
-    // Get the main content
     let preview = '';
     if (contentLines.length > 0) {
       preview = contentLines[0];
     } else if (lines.length > 0) {
-      // Fallback to first line if no content lines found
       preview = lines.find(line => line.trim().length > 30) || lines[0];
     } else {
       preview = `Report at position ${position}`;
     }
     
-    // Clean preview text
-    preview = preview
-      .replace(/^(Other:|Phishing|Scam)\s*/i, '')
-      .replace(/\s+Reported\s+Domain.*$/i, '')
-      .trim();
+    // ONLY CHANGE: Format category with dot and space at the beginning
+    if (category && category.trim()) {
+      preview = `${category.trim()}. ${preview.replace(/^(Other:|Phishing|Scam)\s*/i, '').trim()}`;
+    }
     
-    // Create stable content hash
     const contentHash = this.createContentHash(preview + author);
-    
-    // Create ID from content hash + position for uniqueness
     const id = `${contentHash}_${position}`;
     
     return {
@@ -191,18 +225,26 @@ class FixedPuppeteerMonitor {
   }
 
   private parseTimeToMinutes(timeAgo: string): number {
+    // Handle edge cases for parsing time
+    if (!timeAgo || timeAgo.includes('pos_')) return 999999; // Position-based fallback
+    
     const match = timeAgo.match(/(\d+)\s+(seconds?|minutes?|hours?|days?)/i);
-    if (!match) return 999999;
+    if (!match) {
+      console.log(`⚠️ Could not parse time: "${timeAgo}"`);
+      return 999999; // If we can't parse, treat as very old
+    }
     
     const value = parseInt(match[1]);
     const unit = match[2].toLowerCase();
     
-    if (unit.startsWith('second')) return Math.max(1, Math.floor(value / 60));
-    if (unit.startsWith('minute')) return value;
-    if (unit.startsWith('hour')) return value * 60;
-    if (unit.startsWith('day')) return value * 24 * 60;
+    let minutes = 999999;
+    if (unit.startsWith('second')) minutes = Math.max(0, Math.floor(value / 60));
+    if (unit.startsWith('minute')) minutes = value;
+    if (unit.startsWith('hour')) minutes = value * 60;
+    if (unit.startsWith('day')) minutes = value * 24 * 60;
     
-    return 999999;
+    console.log(`⏱️ Parsed "${timeAgo}" as ${minutes} minutes`);
+    return minutes;
   }
 
   public async checkForNewReports(): Promise<{ newReports: number; success: boolean; debug?: any }> {
@@ -234,30 +276,34 @@ class FixedPuppeteerMonitor {
         timeout: 30000 
       });
 
-      // Wait for reports to load
       await page.waitForSelector('.create-ScamReportCard', { timeout: 15000 });
       await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // Extract reports
+      // ONLY CHANGE: Extract category from create-ScamReportCard__category-section
       const reportsData = await page.evaluate((): ReportData[] => {
         const reportElements = Array.from(document.querySelectorAll('.create-ScamReportCard'));
         console.log(`Found ${reportElements.length} ScamReportCard elements`);
         
-        return reportElements.map((element, index) => ({
-          textContent: element.textContent || '',
-          innerHTML: element.innerHTML.substring(0, 500),
-          position: index
-        }));
+        return reportElements.map((element, index) => {
+          // Extract category from the category section div
+          const categoryElement = element.querySelector('.create-ScamReportCard__category-section');
+          const category = categoryElement ? categoryElement.textContent?.trim() || '' : '';
+          
+          return {
+            textContent: element.textContent || '',
+            innerHTML: element.innerHTML.substring(0, 500),
+            position: index,
+            category: category
+          };
+        });
       });
 
       console.log(`📊 Extracted ${reportsData.length} reports`);
 
-      // Create snapshots
       const currentReports = reportsData.map((data, index) => 
         this.createReportSnapshot(data, index)
       );
 
-      // Create set of current content hashes for comparison
       const currentHashes = new Set(currentReports.map(r => r.contentHash));
 
       const debug = {
@@ -267,6 +313,7 @@ class FixedPuppeteerMonitor {
         previousReports: this.lastReports.length,
         previousHashes: this.lastReportHashes.size,
         currentHashes: currentHashes.size,
+        sentHashes: this.sentReportHashes.size,
         url,
         sampleReports: currentReports.slice(0, 2).map(r => ({
           id: r.id,
@@ -281,64 +328,99 @@ class FixedPuppeteerMonitor {
 
       // First run - establish baseline
       if (this.checkCount === 1) {
+        this.monitorStartTime = Date.now(); // Record when monitoring started
         this.lastReports = currentReports;
         this.lastReportHashes = currentHashes;
         
+        // IMPORTANT: Mark ALL current reports as already seen/sent to prevent sending old reports
+        currentReports.forEach(report => {
+          this.sentReportHashes.add(report.contentHash);
+        });
+        
+        // Save the baseline to file
+        this.saveSentReports();
+        
         console.log(`📥 Baseline established: ${currentReports.length} reports, ${currentHashes.size} unique hashes`);
+        console.log(`🔒 Marked ${currentReports.length} existing reports as already processed`);
+        console.log(`⏰ Monitor start time: ${new Date(this.monitorStartTime).toLocaleString('en-US')}`);
         
         await this.sendTelegramMessage(
           `🚀 <b>ChainAbuse Monitor Started</b>\n\n` +
-          // `📊 <b>Baseline:</b> ${currentReports.length} reports tracked\n` +
           `⏰ <b>Started:</b> ${currentTime.toLocaleString('en-US')}\n\n` +
-          // `🔧 <b>Configuration:</b>\n` +
-          // `✅ Puppeteer + Proxy enabled\n` +
-          // `✅ Content-based detection\n` +
-          // `✅ 30-second monitoring interval\n\n` +
+          // `📊 <b>Baseline:</b> ${currentReports.length} existing reports marked as processed\n` +
+          // `💾 <b>Persistent storage:</b> ${this.sentReportHashes.size} total tracked reports\n\n` +
           `🔍 <b>Latest report preview:</b>\n` +
           `${currentReports[0] ? `⏰ ${currentReports[0].timeAgo}\n📝 ${currentReports[0].preview.substring(0, 100)}...` : 'No reports found'}\n\n` +
-          `📡 <b>Monitoring for new reports...</b>`
+          `📡 <b>Monitoring for NEW reports only...</b>`
         );
 
         return { newReports: 0, success: true, debug };
       }
 
-      // Detect NEW reports using content hash comparison
       const newReports: ReportSnapshot[] = [];
       
       console.log(`🔍 Comparing hashes: ${currentHashes.size} current vs ${this.lastReportHashes.size} previous`);
       
       currentReports.forEach(currentReport => {
-        // Check if this content hash existed before
-        if (!this.lastReportHashes.has(currentReport.contentHash)) {
-          // This is new content!
-          const minutesAgo = this.parseTimeToMinutes(currentReport.timeAgo);
+        // Check if this content hash existed before AND wasn't already sent
+        if (!this.lastReportHashes.has(currentReport.contentHash) && 
+            !this.sentReportHashes.has(currentReport.contentHash)) {
           
-          // Only consider truly fresh reports (last 2 hours)
-          if (minutesAgo <= 120) {
-            console.log(`🆕 NEW REPORT: hash=${currentReport.contentHash}, time=${currentReport.timeAgo}, author=${currentReport.author}`);
+          const timeAgoText = currentReport.timeAgo.toLowerCase();
+          
+          // ULTRA STRICT: Only accept reports that are literally just published
+          const isVeryFresh = (
+            timeAgoText.includes('0 minutes ago') ||
+            timeAgoText.includes('few seconds ago') ||
+            timeAgoText.includes('just now') ||
+            (timeAgoText.includes('seconds ago') && !timeAgoText.match(/[5-9]\d+\s+seconds/)) // Less than 50 seconds
+          );
+          
+          console.log(`🔍 Checking report: "${currentReport.timeAgo}" - isVeryFresh: ${isVeryFresh}`);
+          
+          if (isVeryFresh) {
+            console.log(`🆕 ULTRA FRESH REPORT ACCEPTED: ${currentReport.timeAgo}, hash=${currentReport.contentHash.substring(0, 8)}`);
             newReports.push(currentReport);
           } else {
-            console.log(`⏰ Old report ignored: ${currentReport.timeAgo} (${minutesAgo} minutes ago)`);
+            console.log(`⏰ Report REJECTED (not fresh enough): "${currentReport.timeAgo}" - marking as seen`);
+            // Mark rejected reports as seen to prevent future sending
+            this.sentReportHashes.add(currentReport.contentHash);
           }
+        } else if (this.sentReportHashes.has(currentReport.contentHash)) {
+          console.log(`🔄 Already sent report skipped: hash=${currentReport.contentHash.substring(0, 8)}...`);
+        } else if (this.lastReportHashes.has(currentReport.contentHash)) {
+          console.log(`👁️ Known report (from previous check): hash=${currentReport.contentHash.substring(0, 8)}...`);
         }
       });
 
-      // Update stored data
       this.lastReports = currentReports;
       this.lastReportHashes = currentHashes;
 
       console.log(`✅ Detection completed: ${newReports.length} truly new reports found`);
 
-      // Send notifications ONLY for genuinely new reports
       for (const newReport of newReports) {
         await this.sendTelegramMessage(
           `🚨 <b>NEW CHAINABUSE REPORT DETECTED</b>\n\n` +
           `⏰ <b>Published:</b> ${newReport.timeAgo}\n` +
-          // `👤 <b>Reporter:</b> ${newReport.author}\n\n` +
           `📝 <b>Report Content:</b>\n${newReport.preview}\n\n` +
           `🔗 <a href="https://www.chainabuse.com/reports">View on ChainAbuse</a>\n\n` +
           `📊 <b>Check #${this.checkCount}</b> • ${currentTime.toLocaleString('en-US')}`
         );
+        
+        // Mark as sent to prevent future duplicates
+        this.sentReportHashes.add(newReport.contentHash);
+        console.log(`✅ Report sent and marked: hash=${newReport.contentHash.substring(0, 8)}...`);
+      }
+
+      // Save sent reports to file for persistence
+      this.saveSentReports();
+
+      // Clean up old sent hashes periodically (keep last 2000 to prevent memory issues)
+      if (this.sentReportHashes.size > 2000) {
+        const sentArray = Array.from(this.sentReportHashes);
+        this.sentReportHashes = new Set(sentArray.slice(-2000));
+        this.saveSentReports(); // Save after cleanup
+        console.log(`🧹 Cleaned sent hashes, kept last 2000`);
       }
 
       return { 
@@ -380,7 +462,6 @@ class FixedPuppeteerMonitor {
   }
 }
 
-// Global instance
 let monitor: FixedPuppeteerMonitor | null = null;
 
 export async function POST(request: NextRequest) {
