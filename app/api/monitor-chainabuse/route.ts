@@ -1,6 +1,6 @@
-// app/api/monitor-chainabuse/route.ts - Minimal Category Fix
+// app/api/monitor-chainabuse/route.ts - Clean Report Content Version
 import { NextRequest, NextResponse } from 'next/server';
-import puppeteer, { Browser } from 'puppeteer';
+import puppeteer, { Browser, Page } from 'puppeteer';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
@@ -12,16 +12,22 @@ interface ReportSnapshot {
   timestamp: number;
   position: number;
   contentHash: string;
+  reportUrl: string;
+  reportId?: string;
 }
 
 interface ReportData {
   textContent: string;
   innerHTML: string;
   position: number;
-  category: string; // Add category extraction
+  category: string;
+  reportUrl: string;
+  reportId: string;
+  clickSuccess: boolean;
+  navigationUrl: string;
 }
 
-class FixedPuppeteerMonitor {
+class CleanReportMonitor {
   private telegramBotToken: string;
   private telegramChatId: string;
   private lastReports: ReportSnapshot[] = [];
@@ -42,7 +48,6 @@ class FixedPuppeteerMonitor {
       this.proxyConfig = { host, port: parseInt(port), username, password };
     }
 
-    // Load previously sent reports from file
     this.loadSentReports();
   }
 
@@ -149,102 +154,451 @@ class FixedPuppeteerMonitor {
     return Math.abs(hash).toString(16);
   }
 
-  private createReportSnapshot(reportData: ReportData, position: number): ReportSnapshot {
-    const textContent = reportData.textContent || '';
-    const category = reportData.category || '';
+  // Detect scam category based on content analysis using exact ChainAbuse categories
+  private detectScamCategory(content: string, rawContent: string): string {
+    const text = (content + ' ' + rawContent).toLowerCase();
     
-    // Clean up text - add spaces between concatenated elements
-    const cleanedText = textContent
-      .replace(/(\d+)\s+(seconds?|minutes?|hours?|days?)\s+ago1Reported/gi, '$1 $2 ago Reported')
-      .replace(/ago1Reported/gi, 'ago Reported')
-      .replace(/Submitted by([^\s])/gi, 'Submitted by $1')
-      .replace(/(\w)1Reported/gi, '$1 Reported')
-      .replace(/Domainpancakeswap/gi, 'Domain pancakeswap')
-      .replace(/Domain([a-z])/gi, 'Domain $1')
-      .replace(/(\w)(\d+)\s+(seconds?|minutes?|hours?|days?)\s+ago/gi, '$1 $2 $3 ago')
-      .replace(/\s+/g, ' ')
-      .trim();
+    // Exact ChainAbuse categories in order of popularity
+    const categories = [
+      'Phishing Scam',
+      'Rug Pull Scam', 
+      'Other Blackmail Scam',
+      'Sextortion Scam',
+      'Ransomware',
+      'Impersonation Scam',
+      'Fake Returns Scam',
+      'Hack - Other',
+      'NFT Airdrop Scam',
+      'Fake Project Scam',
+      'Romance Scam',
+      'Pigbutchering Scam',
+      'Contract Exploit Scam',
+      'Donation Impersonation Scam'
+    ];
     
-    const timeMatch = cleanedText.match(/(\d+)\s+(seconds?|minutes?|hours?|days?)\s+ago/i);
-    const timeAgo = timeMatch ? timeMatch[0] : `pos_${position}`;
+    // Simple keyword matching for each category
+    const categoryKeywords: { [key: string]: string[] } = {
+      'Phishing Scam': ['phishing', 'phish', 'fake website', 'fake site', 'credential'],
+      'Rug Pull Scam': ['rug pull', 'rugpull', 'liquidity'],
+      'Other Blackmail Scam': ['blackmail', 'threaten', 'demand payment'],
+      'Sextortion Scam': ['sextortion', 'webcam', 'intimate', 'nude'],
+      'Ransomware': ['ransomware', 'encrypted', 'decrypt', 'locked files'],
+      'Impersonation Scam': ['impersonat', 'pretend', 'fake identity', 'posing as'],
+      'Fake Returns Scam': ['fake return', 'guaranteed return', 'high return'],
+      'Hack - Other': ['hack', 'hacked', 'breach', 'compromised'],
+      'NFT Airdrop Scam': ['nft', 'airdrop', 'free nft', 'mint'],
+      'Fake Project Scam': ['fake project', 'fake ico', 'fake token'],
+      'Romance Scam': ['romance', 'dating', 'relationship', 'love'],
+      'Pigbutchering Scam': ['pigbutchering', 'pig butchering', 'investment fraud'],
+      'Contract Exploit Scam': ['contract exploit', 'smart contract', 'defi exploit'],
+      'Donation Impersonation Scam': ['donation', 'charity', 'fundraising']
+    };
     
-    const authorMatch = cleanedText.match(/Submitted by\s+([^\d\n•]+?)(?:\s+\d+|$)/i);
-    let author = 'unknown';
-    if (authorMatch) {
-      author = authorMatch[1]
-        .replace(/\s+(seconds?|minutes?|hours?|days?)\s+ago.*$/i, '')
-        .replace(/\s+Reported.*$/i, '')
-        .trim();
-    }
-    
-    if (author === 'unknown') {
-      const altAuthorMatch = cleanedText.match(/^([A-Za-z][A-Za-z0-9_]*)\s+\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/i);
-      if (altAuthorMatch) {
-        author = altAuthorMatch[1];
+    // Find best matching category
+    for (const category of categories) {
+      const keywords = categoryKeywords[category] || [];
+      for (const keyword of keywords) {
+        if (text.includes(keyword)) {
+          return category;
+        }
       }
     }
     
-    const lines = cleanedText.split('\n').filter((line: string) => line.trim().length > 10);
-    const contentLines = lines.filter((line: string) => {
-      const trimmed = line.trim();
-      return !trimmed.match(/^Submitted by/i) && 
-             !trimmed.match(/^\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/i) &&
-             !trimmed.match(/^Vote/i) &&
-             !trimmed.match(/^Comments/i) &&
-             !trimmed.match(/^Other:/i) &&
-             !trimmed.match(/^Reported Domain/i) &&
-             trimmed.length > 20;
-    });
+    // Default fallback
+    return 'Phishing Scam';
+  }
+
+  // Normalize category to match exact ChainAbuse categories
+  private normalizeScamCategory(category: string): string {
+    const normalized = category.toLowerCase().trim();
     
-    let preview = '';
-    if (contentLines.length > 0) {
-      preview = contentLines[0];
-    } else if (lines.length > 0) {
-      preview = lines.find(line => line.trim().length > 30) || lines[0];
+    // Exact ChainAbuse categories
+    const exactCategories = [
+      'Phishing Scam',
+      'Rug Pull Scam', 
+      'Other Blackmail Scam',
+      'Sextortion Scam',
+      'Ransomware',
+      'Impersonation Scam',
+      'Fake Returns Scam',
+      'Hack - Other',
+      'NFT Airdrop Scam',
+      'Fake Project Scam',
+      'Romance Scam',
+      'Pigbutchering Scam',
+      'Contract Exploit Scam',
+      'Donation Impersonation Scam'
+    ];
+    
+    // Check if category already matches exactly
+    for (const exactCategory of exactCategories) {
+      if (normalized === exactCategory.toLowerCase()) {
+        return exactCategory;
+      }
+    }
+    
+    // Simple mapping based on keywords
+    if (normalized.includes('phish')) return 'Phishing Scam';
+    if (normalized.includes('rug pull')) return 'Rug Pull Scam';
+    if (normalized.includes('blackmail')) return 'Other Blackmail Scam';
+    if (normalized.includes('sextortion')) return 'Sextortion Scam';
+    if (normalized.includes('ransomware')) return 'Ransomware';
+    if (normalized.includes('impersonat')) return 'Impersonation Scam';
+    if (normalized.includes('fake return')) return 'Fake Returns Scam';
+    if (normalized.includes('hack')) return 'Hack - Other';
+    if (normalized.includes('nft') || normalized.includes('airdrop')) return 'NFT Airdrop Scam';
+    if (normalized.includes('fake project')) return 'Fake Project Scam';
+    if (normalized.includes('romance')) return 'Romance Scam';
+    if (normalized.includes('pigbutcher')) return 'Pigbutchering Scam';
+    if (normalized.includes('contract')) return 'Contract Exploit Scam';
+    if (normalized.includes('donation')) return 'Donation Impersonation Scam';
+    
+    // If no match, return as-is or default
+    return category || 'Phishing Scam';
+  }
+
+  // Clean report content to remove duplicated information
+  private cleanReportContent(rawContent: string): {
+    cleanContent: string;
+    author: string;
+    category: string;
+    reportedDomain: string;
+    reportedAddress: string;
+  } {
+    let content = rawContent;
+    
+    // Extract category more precisely - look for common category patterns
+    const categoryPatterns = [
+      // Standard pattern: "Category. Rest of content"
+      /^([^.]+?(?:Scam|Phishing|Fraud|Theft|Hack|Attack|Threat|Malware|Ransomware|Ponzi|Pyramid|Rug Pull|Exit Scam|Romance Scam|Investment Scam|Tech Support Scam|Fake Website|Impersonation|Money Laundering|Darknet|Illegal|Criminal|Suspicious|Report|Incident|Alert|Warning|Notice|Violation|Abuse|Spam|Botnet|Mining|Unauthorized|Blackmail|Extortion|Sextortion|Trading|Exchange|Wallet|DeFi|NFT|Token|Coin|Crypto|Bitcoin|Ethereum|Address|Domain|URL|Website|Platform|Service|Application|App|Software|System|Network|Protocol|Blockchain|Smart Contract)[^.]*)\.\s*(.*)/i,
+      // Fallback: First sentence ending with period
+      /^([^.]{1,80})\.\s*(.*)/,
+      // If no period, look for capital letter followed by lowercase (sentence boundary)
+      /^([A-Z][^A-Z]*?)([A-Z][a-z].*)/
+    ];
+    
+    let category = '';
+    let restContent = content;
+    
+    for (const pattern of categoryPatterns) {
+      const match = content.match(pattern);
+      if (match) {
+        const potentialCategory = match[1].trim();
+        
+        // Validate category - should be short and descriptive
+        if (potentialCategory.length <= 100 && 
+            potentialCategory.length >= 5 &&
+            !potentialCategory.match(/^(The|This|A|An|I|You|We|They|It|My|Our|Your)\s/i) &&
+            !potentialCategory.includes('http') &&
+            !potentialCategory.includes('@') &&
+            !potentialCategory.match(/\d{4}-\d{2}-\d{2}/) &&
+            !potentialCategory.match(/Submitted by/i)) {
+          
+          category = potentialCategory;
+          restContent = match[2] ? match[2].trim() : '';
+          break;
+        }
+      }
+    }
+    
+    // Smart categorization based on most common ChainAbuse categories
+    if (!category || category.length < 5) {
+      category = this.detectScamCategory(content, rawContent);
+      restContent = content;
     } else {
-      preview = `Report at position ${position}`;
+      // Normalize existing category to match common patterns
+      category = this.normalizeScamCategory(category);
     }
     
-    // ONLY CHANGE: Format category with dot and space at the beginning
-    if (category && category.trim()) {
-      preview = `${category.trim()}. ${preview.replace(/^(Other:|Phishing|Scam)\s*/i, '').trim()}`;
+    content = restContent;
+    
+    // Extract author from "Submitted by" pattern
+    const authorMatches = [
+      content.match(/Submitted by\s+([^.\d\n]+?)(?:\s+\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago|$)/i),
+      content.match(/^([A-Za-z][A-Za-z0-9_]*)\s+\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/i)
+    ];
+    
+    let author = 'unknown';
+    for (const match of authorMatches) {
+      if (match) {
+        author = match[1].trim();
+        break;
+      }
     }
     
-    const contentHash = this.createContentHash(preview + author);
+    // Extract reported domain - look for proper domains only
+    let reportedDomain = '';
+    
+    // First try explicit "Reported Domain" pattern
+    const explicitDomainMatch = content.match(/Reported\s+Domain\s+([^\s\n]+)/i);
+    if (explicitDomainMatch) {
+      const domain = explicitDomainMatch[1].trim();
+      // Validate it's a proper domain/URL
+      if (domain.match(/^https?:\/\//) || domain.match(/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
+        reportedDomain = domain;
+      }
+    }
+    
+    // If no explicit domain, look for URLs in the content
+    if (!reportedDomain) {
+      const urlMatch = content.match(/(https?:\/\/[^\s\n]+)/i);
+      if (urlMatch) {
+        reportedDomain = urlMatch[1].trim();
+      }
+    }
+    
+    // If still no domain, look for domains in the content (more permissive search)
+    if (!reportedDomain) {
+      // Look for domain patterns throughout the text
+      const domainMatches = content.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g);
+      if (domainMatches) {
+        for (const potentialDomain of domainMatches) {
+          const domain = potentialDomain.trim();
+          // Validate it's a proper domain
+          if (domain.length >= 4 &&
+              domain.includes('.') &&
+              !domain.match(/^[a-z]+\.[A-Z]/) && // Reject patterns like "quickly.Submitted"
+              !domain.match(/\.(jpg|png|gif|pdf|doc|txt|zip)$/i) && // Not file extensions
+              domain.match(/\.(com|org|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc)$/i)) {
+            reportedDomain = domain;
+            break;
+          }
+        }
+      }
+    }
+    
+    // Also check the original raw content for domains that might have been cleaned out
+    if (!reportedDomain) {
+      const rawDomainMatches = rawContent.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g);
+      if (rawDomainMatches) {
+        for (const potentialDomain of rawDomainMatches) {
+          const domain = potentialDomain.trim();
+          if (domain.length >= 4 &&
+              domain.includes('.') &&
+              !domain.match(/^[a-z]+\.[A-Z]/) &&
+              !domain.match(/\.(jpg|png|gif|pdf|doc|txt|zip)$/i) &&
+              domain.match(/\.(com|org|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc)$/i)) {
+            reportedDomain = domain;
+            break;
+          }
+        }
+      }
+    }
+    
+    // Clean up domain - remove trailing periods and validate
+    if (reportedDomain) {
+      reportedDomain = reportedDomain.replace(/[.,;]+$/, '');
+      
+      // Final validation - reject if it looks like random text
+      if (reportedDomain.match(/^[a-z]+\.[A-Z]/) || // like "quickly.Submitted"
+          reportedDomain.length < 4 || 
+          reportedDomain.split('.').some(part => part.length < 1)) {
+        reportedDomain = '';
+      }
+    }
+    
+    // Extract reported address
+    const addressMatch = content.match(/Reported\s+Address\s*([a-zA-Z0-9]+)/i);
+    const reportedAddress = addressMatch ? addressMatch[1].trim() : '';
+    
+    // Clean the content by removing extracted parts and duplicated info
+    let cleanContent = content
+      // Remove category-related words that might be duplicated in content
+      .replace(/^(Phishing|Rug Pull|Other Blackmail|Sextortion|Ransomware|Impersonation|Fake Returns|Hack - Other|NFT Airdrop|Fake Project|Romance|Pigbutchering|Contract Exploit|Donation Impersonation)\s*Scam\s*/i, '')
+      .replace(/^(Phishing|Rug Pull|Other Blackmail|Sextortion|Ransomware|Impersonation|Fake Returns|Hack|NFT Airdrop|Fake Project|Romance|Pigbutchering|Contract Exploit|Donation Impersonation)\s*/i, '')
+      .replace(/^Scam\s*/i, '')
+      // Remove "Submitted by" lines completely
+      .replace(/Submitted by\s+[^.\n]*(?:\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)?[.\n]*/gi, '')
+      // Remove time ago patterns at the end and in middle
+      .replace(/\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\s*/gi, '')
+      // Remove "Reported Domain" lines
+      .replace(/Reported\s+Domain\s+[^\s\n]+\s*/gi, '')
+      // Remove "Reported Address" lines  
+      .replace(/Reported\s+Address\s*[a-zA-Z0-9]+\s*/gi, '')
+      // Remove timestamp patterns like "2025-06-03T12:56:33.753Z"
+      .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\b/gi, '')
+      // Remove date patterns like "at 2025-06-03"
+      .replace(/\bat\s+\d{4}-\d{2}-\d{2}[^\s]*/gi, '')
+      // Remove "Threat detected at" patterns
+      .replace(/Threat detected at[^.]*\./gi, '')
+      // Remove domain fragments that got concatenated
+      .replace(/[a-zA-Z0-9.-]+\.(?:com|org|net|io|co|uk|de|fr|squarespace\.com)(?:\/[^\s]*)?/gi, '')
+      // Remove URL fragments
+      .replace(/https?:\/\/[^\s]+/gi, '')
+      // Remove other metadata patterns
+      .replace(/Vote\s*\d*\s*/gi, '')
+      .replace(/Comments?\s*\d*\s*/gi, '')
+      .replace(/Other:\s*/gi, '')
+      // Clean up author names that got concatenated
+      .replace(/\b(PhishFort|Metamask|Binance|Coinbase|TrustWallet)\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\b/gi, '')
+      // Remove pattern like "classified as infringement"
+      .replace(/,?\s*classified as [^.,\n]*/gi, '')
+      // Fix common concatenation issues
+      .replace(/([a-z])(\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 $2')
+      .replace(/([.!?])([A-Z])/g, '$1 $2')
+      // Remove multiple dots and clean punctuation
+      .replace(/\.{2,}/g, '.')
+      .replace(/\s*\.\s*$/, '')
+      // Multiple spaces to single space
+      .replace(/\s+/g, ' ')
+      // Remove leading/trailing whitespace and dots
+      .replace(/^[.\s]+|[.\s]+$/g, '')
+      .trim();
+    
+    // If clean content is too short or empty, try to extract meaningful content
+    if (cleanContent.length < 20) {
+      // Split original content into lines and find the meaningful content
+      const lines = rawContent.split(/[\n.]/).map(line => line.trim()).filter(line => line.length > 10);
+      
+      for (const line of lines) {
+        // Skip lines that are just metadata
+        if (!/^(Submitted by|Reported|Vote|Comments|Other|Category|Threat detected|at \d{4})/i.test(line) &&
+            !/^\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago/i.test(line) &&
+            !/^https?:\/\//i.test(line) &&
+            !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(line)) {
+          cleanContent = line.trim();
+          break;
+        }
+      }
+    }
+    
+    // Final cleanup - remove any remaining concatenated elements
+    cleanContent = cleanContent
+      .replace(/\b[a-zA-Z0-9.-]+\.(?:com|org|net|io|co|uk|de|fr)\/[^\s]*/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    return {
+      cleanContent,
+      author,
+      category,
+      reportedDomain,
+      reportedAddress
+    };
+  }
+
+  private async extractReportUrlByClick(page: Page, reportElement: any, index: number): Promise<{reportUrl: string, reportId: string, success: boolean}> {
+    try {
+      console.log(`🖱️ Attempting to click report ${index} to extract URL...`);
+      
+      // Open new tab for clicking to avoid disrupting main page
+      const newPage = await page.browser().newPage();
+      
+      if (this.proxyConfig?.username) {
+        await newPage.authenticate({
+          username: this.proxyConfig.username,
+          password: this.proxyConfig.password
+        });
+      }
+
+      await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      // Go to main page in new tab
+      const mainUrl = `https://www.chainabuse.com/reports?sort=newest&_t=${Date.now()}`;
+      await newPage.goto(mainUrl, { waitUntil: 'networkidle0', timeout: 30000 });
+      await newPage.waitForSelector('.create-ScamReportCard', { timeout: 15000 });
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      let finalUrl = '';
+      
+      newPage.on('response', async (response) => {
+        const url = response.url();
+        if (url.includes('/report/') && response.status() === 200) {
+          finalUrl = url;
+          console.log(`🎯 Captured navigation URL: ${url}`);
+        }
+      });
+
+      newPage.on('framenavigated', (frame) => {
+        if (frame === newPage.mainFrame()) {
+          const currentUrl = frame.url();
+          if (currentUrl.includes('/report/')) {
+            finalUrl = currentUrl;
+            console.log(`🎯 Captured frame navigation: ${currentUrl}`);
+          }
+        }
+      });
+
+      // Click the specific report element
+      const reportElements = await newPage.$$('.create-ScamReportCard');
+      if (reportElements[index]) {
+        console.log(`🖱️ Clicking report element ${index}...`);
+        
+        await newPage.evaluate((element) => {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, reportElements[index]);
+        
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await reportElements[index].click();
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        const currentUrl = newPage.url();
+        if (currentUrl.includes('/report/')) {
+          finalUrl = currentUrl;
+        }
+      }
+
+      await newPage.close();
+
+      if (finalUrl && finalUrl.includes('/report/')) {
+        const uuidMatch = finalUrl.match(/\/report\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+        const reportId = uuidMatch ? uuidMatch[1] : '';
+        
+        let properUrl = finalUrl;
+        if (reportId && !finalUrl.includes('context=browse-all')) {
+          properUrl = `https://www.chainabuse.com/report/${reportId}?context=browse-all`;
+        }
+        
+        console.log(`✅ Successfully extracted URL: ${properUrl}`);
+        return {
+          reportUrl: properUrl,
+          reportId: reportId,
+          success: true
+        };
+      } else {
+        console.log(`⚠️ No navigation detected for report ${index}`);
+        return {
+          reportUrl: `https://www.chainabuse.com/reports?sort=newest#report-${index}`,
+          reportId: '',
+          success: false
+        };
+      }
+
+    } catch (error: any) {
+      console.error(`❌ Click navigation failed for report ${index}:`, error.message);
+      return {
+        reportUrl: `https://www.chainabuse.com/reports?sort=newest#report-${index}`,
+        reportId: '',
+        success: false
+      };
+    }
+  }
+
+  private createReportSnapshot(reportData: ReportData, position: number): ReportSnapshot {
+    const textContent = reportData.textContent || '';
+    const reportUrl = reportData.reportUrl || '';
+    const reportId = reportData.reportId || '';
+    
+    // Clean up text and extract information
+    const cleanedData = this.cleanReportContent(textContent);
+    
+    const timeMatch = textContent.match(/(\d+)\s+(seconds?|minutes?|hours?|days?)\s+ago/i);
+    const timeAgo = timeMatch ? timeMatch[0] : `pos_${position}`;
+    
+    const contentHash = this.createContentHash(cleanedData.cleanContent + cleanedData.author);
     const id = `${contentHash}_${position}`;
     
     return {
       id,
-      preview: preview.substring(0, 300),
-      author,
+      preview: cleanedData.cleanContent.substring(0, 300),
+      author: cleanedData.author,
       timeAgo,
       timestamp: Date.now(),
       position,
-      contentHash
+      contentHash,
+      reportUrl,
+      reportId
     };
-  }
-
-  private parseTimeToMinutes(timeAgo: string): number {
-    // Handle edge cases for parsing time
-    if (!timeAgo || timeAgo.includes('pos_')) return 999999; // Position-based fallback
-    
-    const match = timeAgo.match(/(\d+)\s+(seconds?|minutes?|hours?|days?)/i);
-    if (!match) {
-      console.log(`⚠️ Could not parse time: "${timeAgo}"`);
-      return 999999; // If we can't parse, treat as very old
-    }
-    
-    const value = parseInt(match[1]);
-    const unit = match[2].toLowerCase();
-    
-    let minutes = 999999;
-    if (unit.startsWith('second')) minutes = Math.max(0, Math.floor(value / 60));
-    if (unit.startsWith('minute')) minutes = value;
-    if (unit.startsWith('hour')) minutes = value * 60;
-    if (unit.startsWith('day')) minutes = value * 24 * 60;
-    
-    console.log(`⏱️ Parsed "${timeAgo}" as ${minutes} minutes`);
-    return minutes;
   }
 
   public async checkForNewReports(): Promise<{ newReports: number; success: boolean; debug?: any }> {
@@ -254,7 +608,7 @@ class FixedPuppeteerMonitor {
       const currentTime = new Date();
       this.checkCount++;
       
-      console.log(`🚀 Fixed Monitor check #${this.checkCount}: ${currentTime.toLocaleTimeString('pl-PL')}`);
+      console.log(`🚀 Clean Report Monitor check #${this.checkCount}: ${currentTime.toLocaleTimeString('pl-PL')}`);
       
       browser = await this.launchBrowser();
       const page = await browser.newPage();
@@ -279,13 +633,12 @@ class FixedPuppeteerMonitor {
       await page.waitForSelector('.create-ScamReportCard', { timeout: 15000 });
       await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // ONLY CHANGE: Extract category from create-ScamReportCard__category-section
-      const reportsData = await page.evaluate((): ReportData[] => {
+      // Get basic report data first
+      const basicReportsData = await page.evaluate(() => {
         const reportElements = Array.from(document.querySelectorAll('.create-ScamReportCard'));
         console.log(`Found ${reportElements.length} ScamReportCard elements`);
         
         return reportElements.map((element, index) => {
-          // Extract category from the category section div
           const categoryElement = element.querySelector('.create-ScamReportCard__category-section');
           const category = categoryElement ? categoryElement.textContent?.trim() || '' : '';
           
@@ -298,18 +651,55 @@ class FixedPuppeteerMonitor {
         });
       });
 
-      console.log(`📊 Extracted ${reportsData.length} reports`);
+      console.log(`📊 Found ${basicReportsData.length} reports, extracting URLs by clicking...`);
+
+      // Extract URLs for first few reports by clicking
+      const reportsData: ReportData[] = [];
+      const maxClickTests = Math.min(3, basicReportsData.length);
+      
+      for (let i = 0; i < basicReportsData.length; i++) {
+        const basicData = basicReportsData[i];
+        let reportUrl = `https://www.chainabuse.com/reports?sort=newest#report-${i}`;
+        let reportId = '';
+        let clickSuccess = false;
+        let navigationUrl = '';
+
+        if (i < maxClickTests) {
+          const clickResult = await this.extractReportUrlByClick(page, null, i);
+          reportUrl = clickResult.reportUrl;
+          reportId = clickResult.reportId;
+          clickSuccess = clickResult.success;
+          navigationUrl = clickResult.reportUrl;
+        }
+
+        reportsData.push({
+          textContent: basicData.textContent,
+          innerHTML: basicData.innerHTML,
+          position: i,
+          category: basicData.category,
+          reportUrl: reportUrl,
+          reportId: reportId,
+          clickSuccess: clickSuccess,
+          navigationUrl: navigationUrl
+        });
+      }
 
       const currentReports = reportsData.map((data, index) => 
         this.createReportSnapshot(data, index)
       );
 
       const currentHashes = new Set(currentReports.map(r => r.contentHash));
+      const successfulClicks = reportsData.filter(r => r.clickSuccess).length;
 
       const debug = {
         checkNumber: this.checkCount,
         timestamp: currentTime.toISOString(),
         reportsFound: currentReports.length,
+        clickNavigationStats: {
+          attemptedClicks: maxClickTests,
+          successfulClicks: successfulClicks,
+          successRate: maxClickTests > 0 ? (successfulClicks / maxClickTests * 100).toFixed(1) + '%' : '0%'
+        },
         previousReports: this.lastReports.length,
         previousHashes: this.lastReportHashes.size,
         currentHashes: currentHashes.size,
@@ -320,37 +710,44 @@ class FixedPuppeteerMonitor {
           contentHash: r.contentHash,
           timeAgo: r.timeAgo,
           author: r.author,
-          preview: r.preview.substring(0, 100)
-        })),
-        samplePreviousHashes: Array.from(this.lastReportHashes).slice(0, 3),
-        sampleCurrentHashes: Array.from(currentHashes).slice(0, 3)
+          preview: r.preview.substring(0, 100),
+          reportUrl: r.reportUrl,
+          reportId: r.reportId
+        }))
       };
 
       // First run - establish baseline
       if (this.checkCount === 1) {
-        this.monitorStartTime = Date.now(); // Record when monitoring started
+        this.monitorStartTime = Date.now();
         this.lastReports = currentReports;
         this.lastReportHashes = currentHashes;
         
-        // IMPORTANT: Mark ALL current reports as already seen/sent to prevent sending old reports
         currentReports.forEach(report => {
           this.sentReportHashes.add(report.contentHash);
         });
         
-        // Save the baseline to file
         this.saveSentReports();
         
         console.log(`📥 Baseline established: ${currentReports.length} reports, ${currentHashes.size} unique hashes`);
-        console.log(`🔒 Marked ${currentReports.length} existing reports as already processed`);
-        console.log(`⏰ Monitor start time: ${new Date(this.monitorStartTime).toLocaleString('en-US')}`);
+        console.log(`🖱️ Click Navigation Results: ${successfulClicks}/${maxClickTests} successful clicks`);
+        
+        // Get cleaned preview for the startup message
+        let startupPreview = 'No reports found';
+        if (currentReports[0]) {
+          const originalTextContent = reportsData[0]?.textContent || currentReports[0].preview;
+          const cleanedStartupData = this.cleanReportContent(originalTextContent);
+          
+          startupPreview = `⏰ ${currentReports[0].timeAgo}\n` +
+                          `🏷️ ${cleanedStartupData.category}\n` +
+                          `📝 ${cleanedStartupData.cleanContent.substring(0, 100)}...`;
+        }
         
         await this.sendTelegramMessage(
           `🚀 <b>ChainAbuse Monitor Started</b>\n\n` +
           `⏰ <b>Started:</b> ${currentTime.toLocaleString('en-US')}\n\n` +
-          // `📊 <b>Baseline:</b> ${currentReports.length} existing reports marked as processed\n` +
-          // `💾 <b>Persistent storage:</b> ${this.sentReportHashes.size} total tracked reports\n\n` +
           `🔍 <b>Latest report preview:</b>\n` +
-          `${currentReports[0] ? `⏰ ${currentReports[0].timeAgo}\n📝 ${currentReports[0].preview.substring(0, 100)}...` : 'No reports found'}\n\n` +
+          `${startupPreview}\n\n` +
+          `🔗 Sample URL: ${currentReports[0]?.reportUrl || 'None'}\n\n` +
           `📡 <b>Monitoring for NEW reports...</b>`
         );
 
@@ -362,34 +759,27 @@ class FixedPuppeteerMonitor {
       console.log(`🔍 Comparing hashes: ${currentHashes.size} current vs ${this.lastReportHashes.size} previous`);
       
       currentReports.forEach(currentReport => {
-        // Check if this content hash existed before AND wasn't already sent
         if (!this.lastReportHashes.has(currentReport.contentHash) && 
             !this.sentReportHashes.has(currentReport.contentHash)) {
           
           const timeAgoText = currentReport.timeAgo.toLowerCase();
           
-          // ULTRA STRICT: Only accept reports that are literally just published
           const isVeryFresh = (
             timeAgoText.includes('0 minutes ago') ||
             timeAgoText.includes('few seconds ago') ||
             timeAgoText.includes('just now') ||
-            (timeAgoText.includes('seconds ago') && !timeAgoText.match(/[5-9]\d+\s+seconds/)) // Less than 50 seconds
+            (timeAgoText.includes('seconds ago') && !timeAgoText.match(/[5-9]\d+\s+seconds/))
           );
           
           console.log(`🔍 Checking report: "${currentReport.timeAgo}" - isVeryFresh: ${isVeryFresh}`);
           
           if (isVeryFresh) {
-            console.log(`🆕 ULTRA FRESH REPORT ACCEPTED: ${currentReport.timeAgo}, hash=${currentReport.contentHash.substring(0, 8)}`);
+            console.log(`🆕 FRESH REPORT ACCEPTED: ${currentReport.timeAgo}, URL=${currentReport.reportUrl}`);
             newReports.push(currentReport);
           } else {
             console.log(`⏰ Report REJECTED (not fresh enough): "${currentReport.timeAgo}" - marking as seen`);
-            // Mark rejected reports as seen to prevent future sending
             this.sentReportHashes.add(currentReport.contentHash);
           }
-        } else if (this.sentReportHashes.has(currentReport.contentHash)) {
-          console.log(`🔄 Already sent report skipped: hash=${currentReport.contentHash.substring(0, 8)}...`);
-        } else if (this.lastReportHashes.has(currentReport.contentHash)) {
-          console.log(`👁️ Known report (from previous check): hash=${currentReport.contentHash.substring(0, 8)}...`);
         }
       });
 
@@ -399,54 +789,72 @@ class FixedPuppeteerMonitor {
       console.log(`✅ Detection completed: ${newReports.length} truly new reports found`);
 
       for (const newReport of newReports) {
-        // Extract Submitted by and Reported Domain info for better formatting
-        const submittedByMatch = newReport.preview.match(/Submitted by\s+([^\.]+?)(?:\s+\d+.*)?$/i);
-        const reportedDomainMatch = newReport.preview.match(/Reported Domain\s+([^\s]+)/i);
-        const reportedAddressMatch = newReport.preview.match(/Reported\s+Address([a-zA-Z0-9]+)/i);
+        // For new reports, try to get the proper URL by clicking
+        let actualReportUrl = newReport.reportUrl;
+        let actualReportId = newReport.reportId;
         
-        // Clean the main content by removing these elements and duplicated categories
-        let cleanContent = newReport.preview
-          .replace(/^(Sextortion Scam|Phishing Scam|Other|Scam|Phish)\.\s*\1/i, '$1.') // Remove duplicate category
-          .replace(/Submitted by\s+[^\.]*$/i, '')
-          .replace(/Reported Domain\s+[^\s]+/i, '')
-          .replace(/Reported\s+Address[a-zA-Z0-9]+/i, '')
-          .trim();
+        if (!actualReportId && newReport.position < maxClickTests) {
+          console.log(`🖱️ Getting proper URL for new report at position ${newReport.position}...`);
+          const clickResult = await this.extractReportUrlByClick(page, null, newReport.position);
+          if (clickResult.success) {
+            actualReportUrl = clickResult.reportUrl;
+            actualReportId = clickResult.reportId;
+          }
+        }
+
+        // Get cleaned report content using the original text content
+        const originalTextContent = reportsData[newReport.position]?.textContent || newReport.preview;
+        const cleanedData = this.cleanReportContent(originalTextContent);
         
-        // Build the formatted message
-        let message = `🚨 <b>NEW CHAINABUSE REPORT DETECTED</b>\n\n` +
-                     `⏰ <b>Published:</b> ${newReport.timeAgo}\n` +
-                     `📝 <b>Report Content:</b>\n${cleanContent}`;
+        // Build the formatted message with cleaned content
+        let message = `🚨 <b>NEW CHAINABUSE REPORT DETECTED</b>\n\n`;
         
-        if (submittedByMatch) {
-          message += `\n\n<b>Submitted by:</b> ${submittedByMatch[1].trim()}`;
+        if (cleanedData.category) {
+          message += `🏷️ <b>Category:</b> ${cleanedData.category}\n`;
         }
         
-        if (reportedDomainMatch) {
-          message += `\n\n<b>Reported Domain:</b> ${reportedDomainMatch[1].trim()}`;
+        message += `⏰ <b>Published:</b> ${newReport.timeAgo}\n` +
+                  `📝 <b>Report Content:</b>\n${cleanedData.cleanContent}`;
+        
+        if (cleanedData.author && cleanedData.author !== 'unknown') {
+          message += `\n\n👤 <b>Submitted by:</b> ${cleanedData.author}`;
         }
         
-        if (reportedAddressMatch) {
-          message += `\n\n<b>Reported Address:</b> ${reportedAddressMatch[1].trim()}`;
+        if (cleanedData.reportedDomain) {
+          message += `\n🌐 <b>Reported Domain:</b> ${cleanedData.reportedDomain}`;
         }
         
-        message += `\n\n🔗 <a href="https://www.chainabuse.com/reports">View on ChainAbuse</a>\n\n` +
+        if (cleanedData.reportedAddress) {
+          message += `\n💳 <b>Reported Address:</b> ${cleanedData.reportedAddress}`;
+        }
+        
+        // Use the proper URL
+        let linkText = 'View Report Details';
+        let linkInfo = '';
+        
+        if (actualReportId) {
+          linkText = `View Report ${actualReportId.substring(0, 8)}...`;
+        } else {
+          linkText = 'View Reports Page';
+          linkInfo = `\n⚠️ <i>Direct link unavailable</i>`;
+        }
+        
+        message += linkInfo +
+                  `\n\n🔗 <a href="${actualReportUrl}">${linkText}</a>\n\n` +
                   `📊 ${currentTime.toLocaleString('en-US')}`;
 
         await this.sendTelegramMessage(message);
         
-        // Mark as sent to prevent future duplicates
         this.sentReportHashes.add(newReport.contentHash);
-        console.log(`✅ Report sent and marked: hash=${newReport.contentHash.substring(0, 8)}...`);
+        console.log(`✅ Report sent: hash=${newReport.contentHash.substring(0, 8)}, URL=${actualReportUrl}`);
       }
 
-      // Save sent reports to file for persistence
       this.saveSentReports();
 
-      // Clean up old sent hashes periodically (keep last 2000 to prevent memory issues)
       if (this.sentReportHashes.size > 2000) {
         const sentArray = Array.from(this.sentReportHashes);
         this.sentReportHashes = new Set(sentArray.slice(-2000));
-        this.saveSentReports(); // Save after cleanup
+        this.saveSentReports();
         console.log(`🧹 Cleaned sent hashes, kept last 2000`);
       }
 
@@ -460,18 +868,16 @@ class FixedPuppeteerMonitor {
             contentHash: r.contentHash,
             timeAgo: r.timeAgo,
             author: r.author,
-            preview: r.preview.substring(0, 100)
+            preview: r.preview.substring(0, 100),
+            reportUrl: r.reportUrl,
+            reportId: r.reportId
           })),
-          detectionMethod: 'content-hash-comparison',
-          hashComparison: {
-            newHashes: Array.from(currentHashes).filter(h => !this.lastReportHashes.has(h)),
-            removedHashes: Array.from(this.lastReportHashes).filter(h => !currentHashes.has(h))
-          }
+          detectionMethod: 'clean-content-extraction'
         }
       };
 
     } catch (error: any) {
-      console.error('💥 Fixed Monitor error:', error);
+      console.error('💥 Clean Report Monitor error:', error);
       return { 
         newReports: 0, 
         success: false, 
@@ -489,7 +895,7 @@ class FixedPuppeteerMonitor {
   }
 }
 
-let monitor: FixedPuppeteerMonitor | null = null;
+let monitor: CleanReportMonitor | null = null;
 
 export async function POST(request: NextRequest) {
   try {
@@ -502,8 +908,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (!monitor) {
-      console.log('🔧 Initializing Fixed Puppeteer Monitor...');
-      monitor = new FixedPuppeteerMonitor();
+      console.log('🔧 Initializing Clean Report Monitor...');
+      monitor = new CleanReportMonitor();
     }
 
     const result = await monitor.checkForNewReports();
@@ -513,7 +919,7 @@ export async function POST(request: NextRequest) {
       newReports: result.newReports,
       timestamp: new Date().toISOString(),
       debug: result.debug,
-      method: 'fixed-puppeteer'
+      method: 'clean-content'
     });
 
   } catch (error: any) {
@@ -530,16 +936,19 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   return NextResponse.json({
-    status: 'Fixed Puppeteer ChainAbuse Monitor',
+    status: 'Clean Content ChainAbuse Monitor',
     timestamp: new Date().toISOString(),
-    version: 'fixed-v1',
+    version: 'clean-v1',
     features: [
-      'Content hash-based detection',
-      'Stable snapshot comparison', 
-      'Time normalization for hashing',
-      'Duplicate detection prevention',
-      'Fresh report filtering (2 hours)',
-      'Reliable change detection'
+      'Advanced content cleaning',
+      'Duplicate information removal',
+      'Smart content extraction',
+      'Category separation',
+      'Author extraction',
+      'Domain/Address parsing',
+      'Concatenation fixes',
+      'Metadata removal',
+      'Clean Telegram formatting'
     ]
   });
 }
