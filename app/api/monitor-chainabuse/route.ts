@@ -351,7 +351,7 @@ class FixedPuppeteerMonitor {
           // `💾 <b>Persistent storage:</b> ${this.sentReportHashes.size} total tracked reports\n\n` +
           `🔍 <b>Latest report preview:</b>\n` +
           `${currentReports[0] ? `⏰ ${currentReports[0].timeAgo}\n📝 ${currentReports[0].preview.substring(0, 100)}...` : 'No reports found'}\n\n` +
-          `📡 <b>Monitoring for NEW reports only...</b>`
+          `📡 <b>Monitoring for NEW reports...</b>`
         );
 
         return { newReports: 0, success: true, debug };
@@ -399,13 +399,40 @@ class FixedPuppeteerMonitor {
       console.log(`✅ Detection completed: ${newReports.length} truly new reports found`);
 
       for (const newReport of newReports) {
-        await this.sendTelegramMessage(
-          `🚨 <b>NEW CHAINABUSE REPORT DETECTED</b>\n\n` +
-          `⏰ <b>Published:</b> ${newReport.timeAgo}\n` +
-          `📝 <b>Report Content:</b>\n${newReport.preview}\n\n` +
-          `🔗 <a href="https://www.chainabuse.com/reports">View on ChainAbuse</a>\n\n` +
-          `📊 <b>Check #${this.checkCount}</b> • ${currentTime.toLocaleString('en-US')}`
-        );
+        // Extract Submitted by and Reported Domain info for better formatting
+        const submittedByMatch = newReport.preview.match(/Submitted by\s+([^\.]+?)(?:\s+\d+.*)?$/i);
+        const reportedDomainMatch = newReport.preview.match(/Reported Domain\s+([^\s]+)/i);
+        const reportedAddressMatch = newReport.preview.match(/Reported\s+Address([a-zA-Z0-9]+)/i);
+        
+        // Clean the main content by removing these elements and duplicated categories
+        let cleanContent = newReport.preview
+          .replace(/^(Sextortion Scam|Phishing Scam|Other|Scam|Phish)\.\s*\1/i, '$1.') // Remove duplicate category
+          .replace(/Submitted by\s+[^\.]*$/i, '')
+          .replace(/Reported Domain\s+[^\s]+/i, '')
+          .replace(/Reported\s+Address[a-zA-Z0-9]+/i, '')
+          .trim();
+        
+        // Build the formatted message
+        let message = `🚨 <b>NEW CHAINABUSE REPORT DETECTED</b>\n\n` +
+                     `⏰ <b>Published:</b> ${newReport.timeAgo}\n` +
+                     `📝 <b>Report Content:</b>\n${cleanContent}`;
+        
+        if (submittedByMatch) {
+          message += `\n\n<b>Submitted by:</b> ${submittedByMatch[1].trim()}`;
+        }
+        
+        if (reportedDomainMatch) {
+          message += `\n\n<b>Reported Domain:</b> ${reportedDomainMatch[1].trim()}`;
+        }
+        
+        if (reportedAddressMatch) {
+          message += `\n\n<b>Reported Address:</b> ${reportedAddressMatch[1].trim()}`;
+        }
+        
+        message += `\n\n🔗 <a href="https://www.chainabuse.com/reports">View on ChainAbuse</a>\n\n` +
+                  `📊 ${currentTime.toLocaleString('en-US')}`;
+
+        await this.sendTelegramMessage(message);
         
         // Mark as sent to prevent future duplicates
         this.sentReportHashes.add(newReport.contentHash);
