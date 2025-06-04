@@ -1,4 +1,4 @@
-// app/api/monitor-chainabuse/route.ts - Clean Report Content Version
+// app/api/monitor-chainabuse/route.ts - Fixed Content Separation
 import { NextRequest, NextResponse } from 'next/server';
 import puppeteer, { Browser, Page } from 'puppeteer';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
@@ -173,7 +173,8 @@ class CleanReportMonitor {
       'Romance Scam',
       'Pigbutchering Scam',
       'Contract Exploit Scam',
-      'Donation Impersonation Scam'
+      'Donation Impersonation Scam',
+      'Other'
     ];
     
     // Simple keyword matching for each category
@@ -205,7 +206,7 @@ class CleanReportMonitor {
     }
     
     // Default fallback
-    return 'Phishing Scam';
+    return 'Other';
   }
 
   // Normalize category to match exact ChainAbuse categories
@@ -227,7 +228,8 @@ class CleanReportMonitor {
       'Romance Scam',
       'Pigbutchering Scam',
       'Contract Exploit Scam',
-      'Donation Impersonation Scam'
+      'Donation Impersonation Scam',
+      'Other'
     ];
     
     // Check if category already matches exactly
@@ -253,37 +255,46 @@ class CleanReportMonitor {
     if (normalized.includes('contract')) return 'Contract Exploit Scam';
     if (normalized.includes('donation')) return 'Donation Impersonation Scam';
     
-    // If no match, return as-is or default
-    return category || 'Phishing Scam';
+    // If no match, return 'Other' instead of original category or 'Phishing Scam'
+    return 'Other';
   }
 
-// Clean report content to remove duplicated information
+  // FIXED: Clean report content with proper domain extraction and content cleaning
 private cleanReportContent(rawContent: string): {
   cleanContent: string;
   author: string;
   category: string;
   reportedDomain: string;
   reportedAddress: string;
+  threatDetectedAt?: string;
 } {
   let content = rawContent;
   
+  console.log('🔍 Original content length:', content.length);
+  console.log('🔍 Original content sample:', content.substring(0, 200));
+  
   // Check for law enforcement restriction message and remove Lorem ipsum after it
   if (content.includes('For security reasons and to protect investigations, this report is currently only shared with Law Enforcement Partners')) {
-    // Remove Lorem ipsum text that appears after the law enforcement message
     content = content.replace(
       /(For security reasons and to protect investigations, this report is currently only shared with Law Enforcement Partners\.?\s*)(Lorem ipsum[\s\S]*)/i,
       '$1'
     );
   }
   
-  // Extract category more precisely - look for common category patterns
+  // STEP 1: Extract threat detection timestamp BEFORE cleaning
+  let threatDetectedAt = '';
+  const threatDetectedMatch = content.match(/Threat detected at\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/i);
+  if (threatDetectedMatch) {
+    threatDetectedAt = threatDetectedMatch[1];
+    console.log('🕒 Threat detected at:', threatDetectedAt);
+  }
+  
+  // STEP 2: Extract category more precisely
   const categoryPatterns = [
-    // Standard pattern: "Category. Rest of content"
-    /^([^.]+?(?:Scam|Phishing|Fraud|Theft|Hack|Attack|Threat|Malware|Ransomware|Ponzi|Pyramid|Rug Pull|Exit Scam|Romance Scam|Investment Scam|Tech Support Scam|Fake Website|Impersonation|Money Laundering|Darknet|Illegal|Criminal|Suspicious|Report|Incident|Alert|Warning|Notice|Violation|Abuse|Spam|Botnet|Mining|Unauthorized|Blackmail|Extortion|Sextortion|Trading|Exchange|Wallet|DeFi|NFT|Token|Coin|Crypto|Bitcoin|Ethereum|Address|Domain|URL|Website|Platform|Service|Application|App|Software|System|Network|Protocol|Blockchain|Smart Contract)[^.]*)\.\s*(.*)/i,
-    // Fallback: First sentence ending with period
-    /^([^.]{1,80})\.\s*(.*)/,
-    // If no period, look for capital letter followed by lowercase (sentence boundary)
-    /^([A-Z][^A-Z]*?)([A-Z][a-z].*)/
+    // Look for clear category indicators at the start
+    /^([^.]+?(?:Scam|Phishing|Fraud|Theft|Hack|Attack|Ransomware|Blackmail|Sextortion|Romance|Investment|Tech Support|Fake|Impersonation|Rug Pull|NFT|Airdrop|Contract Exploit|Donation)[^.]*)\.\s*(.*)/i,
+    // Fallback: First sentence ending with period (max 100 chars)
+    /^([^.]{5,100})\.\s*(.*)/,
   ];
   
   let category = '';
@@ -294,14 +305,15 @@ private cleanReportContent(rawContent: string): {
     if (match) {
       const potentialCategory = match[1].trim();
       
-      // Validate category - should be short and descriptive
+      // Validate category - should be descriptive but not too long
       if (potentialCategory.length <= 100 && 
           potentialCategory.length >= 5 &&
           !potentialCategory.match(/^(The|This|A|An|I|You|We|They|It|My|Our|Your)\s/i) &&
           !potentialCategory.includes('http') &&
           !potentialCategory.includes('@') &&
           !potentialCategory.match(/\d{4}-\d{2}-\d{2}/) &&
-          !potentialCategory.match(/Submitted by/i)) {
+          !potentialCategory.match(/Submitted by/i) &&
+          !potentialCategory.match(/Threat detected/i)) {
         
         category = potentialCategory;
         restContent = match[2] ? match[2].trim() : '';
@@ -310,18 +322,17 @@ private cleanReportContent(rawContent: string): {
     }
   }
   
-  // Smart categorization based on most common ChainAbuse categories
+  // Smart categorization if no clear category found
   if (!category || category.length < 5) {
     category = this.detectScamCategory(content, rawContent);
     restContent = content;
   } else {
-    // Normalize existing category to match common patterns
     category = this.normalizeScamCategory(category);
   }
   
   content = restContent;
   
-  // Extract author from "Submitted by" pattern
+  // STEP 3: Extract author from "Submitted by" pattern
   const authorMatches = [
     content.match(/Submitted by\s+([^.\d\n]+?)(?:\s+\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago|$)/i),
     content.match(/^([A-Za-z][A-Za-z0-9_]*)\s+\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/i)
@@ -335,154 +346,309 @@ private cleanReportContent(rawContent: string): {
     }
   }
   
-  // Extract reported domain - look for proper domains only
+  // STEP 4: FIXED - Extract reported domain with proper prefix/suffix cleaning
   let reportedDomain = '';
   
-  // First try explicit "Reported Domain" pattern
-  const explicitDomainMatch = content.match(/Reported\s+Domain\s+([^\s\n]+)/i);
-  if (explicitDomainMatch) {
-    const domain = explicitDomainMatch[1].trim();
-    // Validate it's a proper domain/URL
-    if (domain.match(/^https?:\/\//) || domain.match(/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
-      reportedDomain = domain;
+  // Look for explicit "Reported Domain" pattern first - FIXED to handle all suffixes
+  const explicitDomainPatterns = [
+    // Handle concatenated "Domain" + domain name with all possible suffixes
+    /(?:Reported\s*)?Domain\s*([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,})(?:Reported|submitted|Submitted)?/i,
+    // Handle spaced version with all suffixes
+    /Reported\s+Domain\s+([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,})(?:Reported|submitted|Submitted)?/i,
+    // Handle cases where "Domain" is directly followed by domain name with suffixes
+    /\bDomain([a-z][a-zA-Z0-9-]*(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,})(?:Reported|submitted|Submitted)?/i,
+    // Handle URL domains with suffixes
+    /https?:\/\/([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,})(?:Reported|submitted|Submitted)?/i
+  ];
+  
+  for (const pattern of explicitDomainPatterns) {
+    const match = content.match(pattern);
+    if (match) {
+      let domain = match[1].trim();
+      
+      // CRITICAL FIX: Remove all possible suffixes
+      domain = domain.replace(/Reported$/i, '');
+      domain = domain.replace(/submitted$/i, '');
+      domain = domain.replace(/Submitted$/i, '');
+      // Remove "Domain" prefix if it exists
+      domain = domain.replace(/^Domain/i, '');
+      // Remove "Address" prefix if it exists (sometimes gets mixed up)
+      domain = domain.replace(/^Address/i, '');
+      // Clean up any remaining artifacts
+      domain = domain.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9.]+$/g, '').trim();
+      
+      if (domain && domain.includes('.')) {
+        reportedDomain = domain;
+        console.log('🌐 Found and cleaned explicit domain pattern:', reportedDomain);
+        break;
+      }
     }
   }
   
-  // If no explicit domain, look for URLs in the content
+  // If no explicit domain found, look for URLs
   if (!reportedDomain) {
     const urlMatch = content.match(/(https?:\/\/[^\s\n]+)/i);
     if (urlMatch) {
-      reportedDomain = urlMatch[1].trim();
+      try {
+        const url = new URL(urlMatch[1]);
+        reportedDomain = url.hostname;
+        console.log('🔗 Extracted domain from URL:', reportedDomain);
+      } catch {
+        // Manual extraction if URL parsing fails
+        const urlString = urlMatch[1].trim();
+        const domainMatch = urlString.match(/https?:\/\/([^\/\s]+)/i);
+        if (domainMatch) {
+          let domain = domainMatch[1];
+          // Remove all suffixes from URL-extracted domain too
+          domain = domain.replace(/Reported$/i, '').replace(/submitted$/i, '').replace(/Submitted$/i, '').trim();
+          reportedDomain = domain;
+          console.log('🔗 Manual domain extraction from URL:', reportedDomain);
+        }
+      }
     }
   }
   
-  // If still no domain, look for domains in the content (more permissive search)
+  // If still no domain, look for domain patterns more carefully
   if (!reportedDomain) {
-    // Look for domain patterns throughout the text
-    const domainMatches = content.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g);
+    const domainMatches = content.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?:Reported|submitted|Submitted)?\b/g);
     if (domainMatches) {
       for (const potentialDomain of domainMatches) {
-        const domain = potentialDomain.trim();
-        // Validate it's a proper domain
+        let domain = potentialDomain.trim();
+        
+        // Remove all possible suffixes
+        domain = domain.replace(/Reported$/i, '');
+        domain = domain.replace(/submitted$/i, '');
+        domain = domain.replace(/Submitted$/i, '');
+        
         if (domain.length >= 4 &&
             domain.includes('.') &&
-            !domain.match(/^[a-z]+\.[A-Z]/) && // Reject patterns like "quickly.Submitted"
+            !domain.match(/^[a-z]+\.[A-Z]/) && // Not like "quickly.Submitted"
             !domain.match(/\.(jpg|png|gif|pdf|doc|txt|zip)$/i) && // Not file extensions
-            domain.match(/\.(com|org|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc)$/i)) {
+            domain.match(/\.(com|org|world|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc|xyz)$/i)) {
           reportedDomain = domain;
+          console.log('🔍 Found and cleaned pattern domain:', reportedDomain);
           break;
         }
       }
     }
   }
   
-  // Also check the original raw content for domains that might have been cleaned out
-  if (!reportedDomain) {
-    const rawDomainMatches = rawContent.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g);
-    if (rawDomainMatches) {
-      for (const potentialDomain of rawDomainMatches) {
-        const domain = potentialDomain.trim();
-        if (domain.length >= 4 &&
-            domain.includes('.') &&
-            !domain.match(/^[a-z]+\.[A-Z]/) &&
-            !domain.match(/\.(jpg|png|gif|pdf|doc|txt|zip)$/i) &&
-            domain.match(/\.(com|org|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc)$/i)) {
-          reportedDomain = domain;
-          break;
-        }
-      }
-    }
-  }
-  
-  // Clean up domain - remove trailing periods and validate
+  // Final domain validation and cleaning
   if (reportedDomain) {
-    reportedDomain = reportedDomain.replace(/[.,;]+$/, '');
+    // Remove any trailing punctuation and all possible suffixes
+    reportedDomain = reportedDomain
+      .replace(/Reported$/i, '')
+      .replace(/submitted$/i, '')
+      .replace(/Submitted$/i, '')
+      .replace(/[.,;]+$/, '')
+      .trim();
     
-    // Final validation - reject if it looks like random text
-    if (reportedDomain.match(/^[a-z]+\.[A-Z]/) || // like "quickly.Submitted"
-        reportedDomain.length < 4 || 
+    // Validate domain format
+    if (reportedDomain.length < 4 || 
+        !reportedDomain.includes('.') ||
         reportedDomain.split('.').some(part => part.length < 1)) {
+      console.log('⚠️ Domain failed validation:', reportedDomain);
       reportedDomain = '';
     }
   }
   
-  // Extract reported address
-  const addressMatch = content.match(/Reported\s+Address\s*([a-zA-Z0-9]+)/i);
-  const reportedAddress = addressMatch ? addressMatch[1].trim() : '';
+  // STEP 5: FIXED - Extract reported address with proper prefix/suffix cleaning
+  const addressPatterns = [
+    // Handle concatenated "Address" + address with all suffixes
+    /(?:Reported\s*)?Address\s*([a-zA-Z0-9]{25,})(?:Reported|submitted|Submitted)?/i,
+    // Handle spaced version with all suffixes
+    /Reported\s+Address\s+([a-zA-Z0-9]{25,})(?:Reported|submitted|Submitted)?/i,
+    // Handle cases where "Address" is directly followed by address with suffixes
+    /\bAddress([a-zA-Z0-9]{25,})(?:Reported|submitted|Submitted)?/i,
+    // Handle Bitcoin/Ethereum addresses directly with suffixes
+    /\b([13][a-zA-Z0-9]{25,62}|bc1[a-zA-Z0-9]{25,62}|0x[a-fA-F0-9]{40})(?:Reported|submitted|Submitted)?\b/i
+  ];
   
-  // Clean the content by removing extracted parts and duplicated info
+  let reportedAddress = '';
+  
+  for (const pattern of addressPatterns) {
+    const match = content.match(pattern);
+    if (match) {
+      let address = match[1].trim();
+      
+      // CRITICAL FIX: Remove all possible suffixes
+      address = address.replace(/Reported$/i, '');
+      address = address.replace(/submitted$/i, '');
+      address = address.replace(/Submitted$/i, '');
+      // Remove "Address" prefix if it exists
+      address = address.replace(/^Address/i, '');
+      // Remove "Domain" prefix if it exists (sometimes gets mixed up)
+      address = address.replace(/^Domain/i, '');
+      // Clean up any remaining artifacts
+      address = address.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '').trim();
+      
+      if (address && address.length >= 25) {
+        reportedAddress = address;
+        console.log('💳 Found and cleaned address:', reportedAddress);
+        break;
+      }
+    }
+  }
+  
+  // STEP 6: COMPREHENSIVE CONTENT CLEANING with proper domain/address handling
   let cleanContent = content
-    // Remove category-related words that might be duplicated in content
+    // Remove category-related duplicates at the start
     .replace(/^(Phishing|Rug Pull|Other Blackmail|Sextortion|Ransomware|Impersonation|Fake Returns|Hack - Other|NFT Airdrop|Fake Project|Romance|Pigbutchering|Contract Exploit|Donation Impersonation)\s*Scam\s*/i, '')
     .replace(/^(Phishing|Rug Pull|Other Blackmail|Sextortion|Ransomware|Impersonation|Fake Returns|Hack|NFT Airdrop|Fake Project|Romance|Pigbutchering|Contract Exploit|Donation Impersonation)\s*/i, '')
     .replace(/^Scam\s*/i, '')
+    
+    // FIX CONCATENATION ISSUES: Add spaces before common concatenation patterns
+    .replace(/([a-z])([A-Z][a-z])/g, '$1 $2') // lowercase followed by uppercase
+    .replace(/([a-z])(\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 $2') // text + time
+    .replace(/([.!?])([A-Z])/g, '$1 $2') // punctuation + uppercase
+    .replace(/(ago)([A-Z])/gi, '$1 $2') // "ago" + uppercase
+    
+    // CRITICAL FIX: Handle "Domain", "Address", and "submitted" concatenation specifically
+    .replace(/([a-z0-9])Domain([a-z])/gi, '$1 Domain $2') // Fix concatenated "Domain"
+    .replace(/Domain([a-z])/gi, 'Domain $1') // Add space after "Domain"
+    .replace(/([a-z0-9])Address([a-z0-9])/gi, '$1 Address $2') // Fix concatenated "Address"
+    .replace(/Address([a-z0-9])/gi, 'Address $1') // Add space after "Address"
+    .replace(/([a-z])Reported/gi, '$1 Reported') // Fix concatenated "Reported"
+    .replace(/Reported([A-Z])/g, 'Reported $1') // Add space after "Reported"
+    .replace(/([a-z])submitted/gi, '$1 submitted') // Fix concatenated "submitted"
+    .replace(/submitted([A-Z])/g, 'submitted $1') // Add space after "submitted"
+    .replace(/([a-z])Submitted/gi, '$1 Submitted') // Fix concatenated "Submitted"
+    .replace(/Submitted([A-Z])/g, 'Submitted $1') // Add space after "Submitted"
+    
     // Remove "Submitted by" lines completely
     .replace(/Submitted by\s+[^.\n]*(?:\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)?[.\n]*/gi, '')
-    // Remove time ago patterns at the end and in middle
-    .replace(/\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\s*/gi, '')
-    // Remove "Reported Domain" lines
+    
+    // Remove time patterns
+    .replace(/\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\s*/gi, ' ')
+    
+    // CRITICAL FIX: Remove incomplete domains and addresses with ALL suffixes
+    .replace(/\b[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}(?:Reported|submitted|Submitted)\b/gi, '') // Domains ending with suffixes
+    .replace(/\b[a-zA-Z0-9]{20,}(?:Reported|submitted|Submitted)\b/gi, '') // Addresses ending with suffixes
+    
+    // CRITICAL FIX: Remove domains and addresses that start with prefixes
+    .replace(/\b(?:Domain|Address)[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}\b/gi, '') // Domains starting with prefixes
+    .replace(/\b(?:Domain|Address)[a-zA-Z0-9]{20,}\b/gi, '') // Addresses starting with prefixes
+    
+    // FIXED: Remove "Reported Domain" and "Reported Address" lines completely
     .replace(/Reported\s+Domain\s+[^\s\n]+\s*/gi, '')
-    // Remove "Reported Address" lines  
+    .replace(/(?:Reported\s*)?Domain\s*[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:Reported|submitted|Submitted)?\s*/gi, '') // Remove domain mentions
     .replace(/Reported\s+Address\s*[a-zA-Z0-9]+\s*/gi, '')
-    // Remove timestamp patterns like "2025-06-03T12:56:33.753Z"
+    .replace(/(?:Reported\s*)?Address\s*[a-zA-Z0-9]{20,}(?:Reported|submitted|Submitted)?\s*/gi, '') // Remove address mentions
+    
+    // CRITICAL FIX: Remove any standalone suffix words that are artifacts
+    .replace(/\bReported\s*$/gi, '') // "Reported" at the end of line
+    .replace(/^\s*Reported\b/gi, '') // "Reported" at the start of line
+    .replace(/\s+Reported\s+/gi, ' ') // "Reported" in the middle (replace with space)
+    .replace(/\bsubmitted\s*$/gi, '') // "submitted" at the end of line
+    .replace(/^\s*submitted\b/gi, '') // "submitted" at the start of line
+    .replace(/\s+submitted\s+/gi, ' ') // "submitted" in the middle (replace with space)
+    .replace(/\bSubmitted\s*$/gi, '') // "Submitted" at the end of line
+    .replace(/^\s*Submitted\b/gi, '') // "Submitted" at the start of line
+    .replace(/\s+Submitted\s+/gi, ' ') // "Submitted" in the middle (replace with space)
+    
+    // CRITICAL FIX: Remove words that start with prefixes
+    .replace(/\b(?:Domain|Address)[a-zA-Z0-9.-]+/gi, '') // Any word starting with "Domain" or "Address"
+    
+    // FIXED: Remove domain extensions from content (they shouldn't appear in main text)
+    .replace(/\s*\.(com|org|world|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc|xyz)\s*$/gi, '')
+    
+    // Remove timestamps but keep threat detection info for later
     .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\b/gi, '')
-    // Remove date patterns like "at 2025-06-03"
     .replace(/\bat\s+\d{4}-\d{2}-\d{2}[^\s]*/gi, '')
-    // Remove "Threat detected at" patterns
     .replace(/Threat detected at[^.]*\./gi, '')
-    // Remove domain fragments that got concatenated
-    .replace(/[a-zA-Z0-9.-]+\.(?:com|org|net|io|co|uk|de|fr|squarespace\.com)(?:\/[^\s]*)?/gi, '')
-    // Remove URL fragments
+    
+    // Remove URLs (they're extracted separately)
     .replace(/https?:\/\/[^\s]+/gi, '')
-    // Remove other metadata patterns
+    
+    // Remove other metadata
     .replace(/Vote\s*\d*\s*/gi, '')
     .replace(/Comments?\s*\d*\s*/gi, '')
     .replace(/Other:\s*/gi, '')
+    .replace(/,?\s*classified as [^.,\n]*/gi, '')
+    
     // Clean up author names that got concatenated
     .replace(/\b(PhishFort|Metamask|Binance|Coinbase|TrustWallet)\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\b/gi, '')
-    // Remove pattern like "classified as infringement"
-    .replace(/,?\s*classified as [^.,\n]*/gi, '')
-    // Fix common concatenation issues
-    .replace(/([a-z])(\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 $2')
-    .replace(/([.!?])([A-Z])/g, '$1 $2')
-    // Remove multiple dots and clean punctuation
-    .replace(/\.{2,}/g, '.')
-    .replace(/\s*\.\s*$/, '')
-    // Multiple spaces to single space
-    .replace(/\s+/g, ' ')
-    // Remove leading/trailing whitespace and dots
-    .replace(/^[.\s]+|[.\s]+$/g, '')
+    
+    // CRITICAL FIX: Remove any remaining fragments that look like incomplete domains/addresses
+    .replace(/\b[a-zA-Z0-9]{25,}(?:Reported|submitted|Submitted)?\b/gi, '') // Long alphanumeric strings (likely addresses)
+    .replace(/\b[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}(?:Reported|submitted|Submitted)?\b/gi, '') // Domain-like patterns
+    
+    // Clean up punctuation and spacing
+    .replace(/\.{2,}/g, '.') // Multiple dots
+    .replace(/\s*\.\s*$/, '') // Trailing dots
+    .replace(/\s+/g, ' ') // Multiple spaces to single
+    .replace(/^[.\s]+|[.\s]+$/g, '') // Leading/trailing dots and spaces
     .trim();
   
-  // If clean content is too short or empty, try to extract meaningful content
+  // STEP 7: If clean content is too short, try to extract meaningful content
   if (cleanContent.length < 20) {
-    // Split original content into lines and find the meaningful content
     const lines = rawContent.split(/[\n.]/).map(line => line.trim()).filter(line => line.length > 10);
     
     for (const line of lines) {
-      // Skip lines that are just metadata
-      if (!/^(Submitted by|Reported|Vote|Comments|Other|Category|Threat detected|at \d{4})/i.test(line) &&
+      if (!/^(Submitted by|Reported|Vote|Comments|Other|Category|at \d{4})/i.test(line) &&
           !/^\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago/i.test(line) &&
           !/^https?:\/\//i.test(line) &&
-          !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(line)) {
+          !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(line) &&
+          !/^Threat detected/i.test(line) &&
+          !/\.(com|org|world|net|io)$/i.test(line)) { // Don't include lines ending with domain extensions
         cleanContent = line.trim();
         break;
       }
     }
   }
   
-  // Final cleanup - remove any remaining concatenated elements
+  // STEP 8: Final cleanup to remove any remaining concatenated elements, domain extensions, and ALL artifacts
   cleanContent = cleanContent
-    .replace(/\b[a-zA-Z0-9.-]+\.(?:com|org|net|io|co|uk|de|fr)\/[^\s]*/gi, '')
-    .replace(/\s+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2') // One more pass for concatenation
+    
+    // CRITICAL: Remove any remaining suffix artifacts
+    .replace(/\bReported$/gi, '') // "Reported" at the end
+    .replace(/^Reported\b/gi, '') // "Reported" at the start
+    .replace(/\s+Reported\s+/gi, ' ') // "Reported" in the middle
+    .replace(/\bsubmitted$/gi, '') // "submitted" at the end
+    .replace(/^submitted\b/gi, '') // "submitted" at the start
+    .replace(/\s+submitted\s+/gi, ' ') // "submitted" in the middle
+    .replace(/\bSubmitted$/gi, '') // "Submitted" at the end
+    .replace(/^Submitted\b/gi, '') // "Submitted" at the start
+    .replace(/\s+Submitted\s+/gi, ' ') // "Submitted" in the middle
+    
+    // CRITICAL: Remove any remaining prefix artifacts
+    .replace(/\bDomain$/gi, '') // "Domain" at the end
+    .replace(/^Domain\b/gi, '') // "Domain" at the start
+    .replace(/\bAddress$/gi, '') // "Address" at the end
+    .replace(/^Address\b/gi, '') // "Address" at the start
+    
+    // CRITICAL: Remove any long alphanumeric strings that look like addresses
+    .replace(/\b[a-zA-Z0-9]{30,}\b/gi, '') // Very long alphanumeric strings
+    .replace(/\b[13][a-zA-Z0-9]{25,62}\b/gi, '') // Bitcoin addresses
+    .replace(/\bbc1[a-zA-Z0-9]{25,62}\b/gi, '') // Bech32 Bitcoin addresses
+    .replace(/\b0x[a-fA-F0-9]{40}\b/gi, '') // Ethereum addresses
+    
+    // CRITICAL: Remove any remaining domain-like patterns from content
+    .replace(/\b[a-zA-Z0-9.-]+\.(com|org|world|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc|xyz)\b/gi, '')
+    
+    // Remove any remaining domain extensions that appear standalone
+    .replace(/\s*\.(com|org|world|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc|xyz)\s*/gi, '')
+    
+    // Final cleanup
+    .replace(/\s+/g, ' ') // Multiple spaces to single
+    .replace(/^[.\s]+|[.\s]+$/g, '') // Leading/trailing dots and spaces
     .trim();
+  
+  console.log('✅ Cleaned content:', cleanContent.substring(0, 100));
+  console.log('📋 Category:', category);
+  console.log('👤 Author:', author);
+  console.log('🌐 Domain:', reportedDomain);
+  console.log('💳 Address:', reportedAddress);
+  console.log('🕒 Threat detected:', threatDetectedAt);
   
   return {
     cleanContent,
     author,
     category,
     reportedDomain,
-    reportedAddress
+    reportedAddress,
+    threatDetectedAt
   };
 }
 
@@ -774,6 +940,7 @@ private cleanReportContent(rawContent: string): {
           const timeAgoText = currentReport.timeAgo.toLowerCase();
           
           const isVeryFresh = (
+            timeAgoText.includes('1 minute ago') ||
             timeAgoText.includes('0 minutes ago') ||
             timeAgoText.includes('few seconds ago') ||
             timeAgoText.includes('just now') ||
@@ -837,6 +1004,12 @@ private cleanReportContent(rawContent: string): {
           message += `\n💳 <b>Reported Address:</b> ${cleanedData.reportedAddress}`;
         }
         
+        // Add threat detection timestamp if available
+        if (cleanedData.threatDetectedAt) {
+          const threatDate = new Date(cleanedData.threatDetectedAt);
+          message += `\n🚨 <b>Threat Detected:</b> ${threatDate.toLocaleString('en-US')}`;
+        }
+        
         // Use the proper URL
         let linkText = 'View Report Details';
         let linkInfo = '';
@@ -853,6 +1026,7 @@ private cleanReportContent(rawContent: string): {
                   `📊 ${currentTime.toLocaleString('en-US')}`;
 
         await this.sendTelegramMessage(message);
+
         
         this.sentReportHashes.add(newReport.contentHash);
         console.log(`✅ Report sent: hash=${newReport.contentHash.substring(0, 8)}, URL=${actualReportUrl}`);
@@ -945,19 +1119,20 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   return NextResponse.json({
-    status: 'Clean Content ChainAbuse Monitor',
+    status: 'Fixed Content Separation ChainAbuse Monitor',
     timestamp: new Date().toISOString(),
-    version: 'clean-v1',
+    version: 'fixed-separation-v1',
     features: [
+      'FIXED: Proper content separation',
+      'FIXED: Concatenation issues resolved',
+      'FIXED: "Reported" word separation',
       'Advanced content cleaning',
-      'Duplicate information removal',
       'Smart content extraction',
       'Category separation',
       'Author extraction',
       'Domain/Address parsing',
-      'Concatenation fixes',
-      'Metadata removal',
-      'Clean Telegram formatting'
+      'Clean Telegram formatting',
+      'Proper spacing between elements'
     ]
   });
 }
