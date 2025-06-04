@@ -257,225 +257,234 @@ class CleanReportMonitor {
     return category || 'Phishing Scam';
   }
 
-  // Clean report content to remove duplicated information
-  private cleanReportContent(rawContent: string): {
-    cleanContent: string;
-    author: string;
-    category: string;
-    reportedDomain: string;
-    reportedAddress: string;
-  } {
-    let content = rawContent;
-    
-    // Extract category more precisely - look for common category patterns
-    const categoryPatterns = [
-      // Standard pattern: "Category. Rest of content"
-      /^([^.]+?(?:Scam|Phishing|Fraud|Theft|Hack|Attack|Threat|Malware|Ransomware|Ponzi|Pyramid|Rug Pull|Exit Scam|Romance Scam|Investment Scam|Tech Support Scam|Fake Website|Impersonation|Money Laundering|Darknet|Illegal|Criminal|Suspicious|Report|Incident|Alert|Warning|Notice|Violation|Abuse|Spam|Botnet|Mining|Unauthorized|Blackmail|Extortion|Sextortion|Trading|Exchange|Wallet|DeFi|NFT|Token|Coin|Crypto|Bitcoin|Ethereum|Address|Domain|URL|Website|Platform|Service|Application|App|Software|System|Network|Protocol|Blockchain|Smart Contract)[^.]*)\.\s*(.*)/i,
-      // Fallback: First sentence ending with period
-      /^([^.]{1,80})\.\s*(.*)/,
-      // If no period, look for capital letter followed by lowercase (sentence boundary)
-      /^([A-Z][^A-Z]*?)([A-Z][a-z].*)/
-    ];
-    
-    let category = '';
-    let restContent = content;
-    
-    for (const pattern of categoryPatterns) {
-      const match = content.match(pattern);
-      if (match) {
-        const potentialCategory = match[1].trim();
+// Clean report content to remove duplicated information
+private cleanReportContent(rawContent: string): {
+  cleanContent: string;
+  author: string;
+  category: string;
+  reportedDomain: string;
+  reportedAddress: string;
+} {
+  let content = rawContent;
+  
+  // Check for law enforcement restriction message and remove Lorem ipsum after it
+  if (content.includes('For security reasons and to protect investigations, this report is currently only shared with Law Enforcement Partners')) {
+    // Remove Lorem ipsum text that appears after the law enforcement message
+    content = content.replace(
+      /(For security reasons and to protect investigations, this report is currently only shared with Law Enforcement Partners\.?\s*)(Lorem ipsum[\s\S]*)/i,
+      '$1'
+    );
+  }
+  
+  // Extract category more precisely - look for common category patterns
+  const categoryPatterns = [
+    // Standard pattern: "Category. Rest of content"
+    /^([^.]+?(?:Scam|Phishing|Fraud|Theft|Hack|Attack|Threat|Malware|Ransomware|Ponzi|Pyramid|Rug Pull|Exit Scam|Romance Scam|Investment Scam|Tech Support Scam|Fake Website|Impersonation|Money Laundering|Darknet|Illegal|Criminal|Suspicious|Report|Incident|Alert|Warning|Notice|Violation|Abuse|Spam|Botnet|Mining|Unauthorized|Blackmail|Extortion|Sextortion|Trading|Exchange|Wallet|DeFi|NFT|Token|Coin|Crypto|Bitcoin|Ethereum|Address|Domain|URL|Website|Platform|Service|Application|App|Software|System|Network|Protocol|Blockchain|Smart Contract)[^.]*)\.\s*(.*)/i,
+    // Fallback: First sentence ending with period
+    /^([^.]{1,80})\.\s*(.*)/,
+    // If no period, look for capital letter followed by lowercase (sentence boundary)
+    /^([A-Z][^A-Z]*?)([A-Z][a-z].*)/
+  ];
+  
+  let category = '';
+  let restContent = content;
+  
+  for (const pattern of categoryPatterns) {
+    const match = content.match(pattern);
+    if (match) {
+      const potentialCategory = match[1].trim();
+      
+      // Validate category - should be short and descriptive
+      if (potentialCategory.length <= 100 && 
+          potentialCategory.length >= 5 &&
+          !potentialCategory.match(/^(The|This|A|An|I|You|We|They|It|My|Our|Your)\s/i) &&
+          !potentialCategory.includes('http') &&
+          !potentialCategory.includes('@') &&
+          !potentialCategory.match(/\d{4}-\d{2}-\d{2}/) &&
+          !potentialCategory.match(/Submitted by/i)) {
         
-        // Validate category - should be short and descriptive
-        if (potentialCategory.length <= 100 && 
-            potentialCategory.length >= 5 &&
-            !potentialCategory.match(/^(The|This|A|An|I|You|We|They|It|My|Our|Your)\s/i) &&
-            !potentialCategory.includes('http') &&
-            !potentialCategory.includes('@') &&
-            !potentialCategory.match(/\d{4}-\d{2}-\d{2}/) &&
-            !potentialCategory.match(/Submitted by/i)) {
-          
-          category = potentialCategory;
-          restContent = match[2] ? match[2].trim() : '';
-          break;
-        }
-      }
-    }
-    
-    // Smart categorization based on most common ChainAbuse categories
-    if (!category || category.length < 5) {
-      category = this.detectScamCategory(content, rawContent);
-      restContent = content;
-    } else {
-      // Normalize existing category to match common patterns
-      category = this.normalizeScamCategory(category);
-    }
-    
-    content = restContent;
-    
-    // Extract author from "Submitted by" pattern
-    const authorMatches = [
-      content.match(/Submitted by\s+([^.\d\n]+?)(?:\s+\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago|$)/i),
-      content.match(/^([A-Za-z][A-Za-z0-9_]*)\s+\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/i)
-    ];
-    
-    let author = 'unknown';
-    for (const match of authorMatches) {
-      if (match) {
-        author = match[1].trim();
+        category = potentialCategory;
+        restContent = match[2] ? match[2].trim() : '';
         break;
       }
     }
-    
-    // Extract reported domain - look for proper domains only
-    let reportedDomain = '';
-    
-    // First try explicit "Reported Domain" pattern
-    const explicitDomainMatch = content.match(/Reported\s+Domain\s+([^\s\n]+)/i);
-    if (explicitDomainMatch) {
-      const domain = explicitDomainMatch[1].trim();
-      // Validate it's a proper domain/URL
-      if (domain.match(/^https?:\/\//) || domain.match(/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
-        reportedDomain = domain;
-      }
+  }
+  
+  // Smart categorization based on most common ChainAbuse categories
+  if (!category || category.length < 5) {
+    category = this.detectScamCategory(content, rawContent);
+    restContent = content;
+  } else {
+    // Normalize existing category to match common patterns
+    category = this.normalizeScamCategory(category);
+  }
+  
+  content = restContent;
+  
+  // Extract author from "Submitted by" pattern
+  const authorMatches = [
+    content.match(/Submitted by\s+([^.\d\n]+?)(?:\s+\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago|$)/i),
+    content.match(/^([A-Za-z][A-Za-z0-9_]*)\s+\d+\s+(seconds?|minutes?|hours?|days?)\s+ago/i)
+  ];
+  
+  let author = 'unknown';
+  for (const match of authorMatches) {
+    if (match) {
+      author = match[1].trim();
+      break;
     }
-    
-    // If no explicit domain, look for URLs in the content
-    if (!reportedDomain) {
-      const urlMatch = content.match(/(https?:\/\/[^\s\n]+)/i);
-      if (urlMatch) {
-        reportedDomain = urlMatch[1].trim();
-      }
+  }
+  
+  // Extract reported domain - look for proper domains only
+  let reportedDomain = '';
+  
+  // First try explicit "Reported Domain" pattern
+  const explicitDomainMatch = content.match(/Reported\s+Domain\s+([^\s\n]+)/i);
+  if (explicitDomainMatch) {
+    const domain = explicitDomainMatch[1].trim();
+    // Validate it's a proper domain/URL
+    if (domain.match(/^https?:\/\//) || domain.match(/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
+      reportedDomain = domain;
     }
-    
-    // If still no domain, look for domains in the content (more permissive search)
-    if (!reportedDomain) {
-      // Look for domain patterns throughout the text
-      const domainMatches = content.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g);
-      if (domainMatches) {
-        for (const potentialDomain of domainMatches) {
-          const domain = potentialDomain.trim();
-          // Validate it's a proper domain
-          if (domain.length >= 4 &&
-              domain.includes('.') &&
-              !domain.match(/^[a-z]+\.[A-Z]/) && // Reject patterns like "quickly.Submitted"
-              !domain.match(/\.(jpg|png|gif|pdf|doc|txt|zip)$/i) && // Not file extensions
-              domain.match(/\.(com|org|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc)$/i)) {
-            reportedDomain = domain;
-            break;
-          }
-        }
-      }
+  }
+  
+  // If no explicit domain, look for URLs in the content
+  if (!reportedDomain) {
+    const urlMatch = content.match(/(https?:\/\/[^\s\n]+)/i);
+    if (urlMatch) {
+      reportedDomain = urlMatch[1].trim();
     }
-    
-    // Also check the original raw content for domains that might have been cleaned out
-    if (!reportedDomain) {
-      const rawDomainMatches = rawContent.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g);
-      if (rawDomainMatches) {
-        for (const potentialDomain of rawDomainMatches) {
-          const domain = potentialDomain.trim();
-          if (domain.length >= 4 &&
-              domain.includes('.') &&
-              !domain.match(/^[a-z]+\.[A-Z]/) &&
-              !domain.match(/\.(jpg|png|gif|pdf|doc|txt|zip)$/i) &&
-              domain.match(/\.(com|org|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc)$/i)) {
-            reportedDomain = domain;
-            break;
-          }
-        }
-      }
-    }
-    
-    // Clean up domain - remove trailing periods and validate
-    if (reportedDomain) {
-      reportedDomain = reportedDomain.replace(/[.,;]+$/, '');
-      
-      // Final validation - reject if it looks like random text
-      if (reportedDomain.match(/^[a-z]+\.[A-Z]/) || // like "quickly.Submitted"
-          reportedDomain.length < 4 || 
-          reportedDomain.split('.').some(part => part.length < 1)) {
-        reportedDomain = '';
-      }
-    }
-    
-    // Extract reported address
-    const addressMatch = content.match(/Reported\s+Address\s*([a-zA-Z0-9]+)/i);
-    const reportedAddress = addressMatch ? addressMatch[1].trim() : '';
-    
-    // Clean the content by removing extracted parts and duplicated info
-    let cleanContent = content
-      // Remove category-related words that might be duplicated in content
-      .replace(/^(Phishing|Rug Pull|Other Blackmail|Sextortion|Ransomware|Impersonation|Fake Returns|Hack - Other|NFT Airdrop|Fake Project|Romance|Pigbutchering|Contract Exploit|Donation Impersonation)\s*Scam\s*/i, '')
-      .replace(/^(Phishing|Rug Pull|Other Blackmail|Sextortion|Ransomware|Impersonation|Fake Returns|Hack|NFT Airdrop|Fake Project|Romance|Pigbutchering|Contract Exploit|Donation Impersonation)\s*/i, '')
-      .replace(/^Scam\s*/i, '')
-      // Remove "Submitted by" lines completely
-      .replace(/Submitted by\s+[^.\n]*(?:\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)?[.\n]*/gi, '')
-      // Remove time ago patterns at the end and in middle
-      .replace(/\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\s*/gi, '')
-      // Remove "Reported Domain" lines
-      .replace(/Reported\s+Domain\s+[^\s\n]+\s*/gi, '')
-      // Remove "Reported Address" lines  
-      .replace(/Reported\s+Address\s*[a-zA-Z0-9]+\s*/gi, '')
-      // Remove timestamp patterns like "2025-06-03T12:56:33.753Z"
-      .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\b/gi, '')
-      // Remove date patterns like "at 2025-06-03"
-      .replace(/\bat\s+\d{4}-\d{2}-\d{2}[^\s]*/gi, '')
-      // Remove "Threat detected at" patterns
-      .replace(/Threat detected at[^.]*\./gi, '')
-      // Remove domain fragments that got concatenated
-      .replace(/[a-zA-Z0-9.-]+\.(?:com|org|net|io|co|uk|de|fr|squarespace\.com)(?:\/[^\s]*)?/gi, '')
-      // Remove URL fragments
-      .replace(/https?:\/\/[^\s]+/gi, '')
-      // Remove other metadata patterns
-      .replace(/Vote\s*\d*\s*/gi, '')
-      .replace(/Comments?\s*\d*\s*/gi, '')
-      .replace(/Other:\s*/gi, '')
-      // Clean up author names that got concatenated
-      .replace(/\b(PhishFort|Metamask|Binance|Coinbase|TrustWallet)\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\b/gi, '')
-      // Remove pattern like "classified as infringement"
-      .replace(/,?\s*classified as [^.,\n]*/gi, '')
-      // Fix common concatenation issues
-      .replace(/([a-z])(\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 $2')
-      .replace(/([.!?])([A-Z])/g, '$1 $2')
-      // Remove multiple dots and clean punctuation
-      .replace(/\.{2,}/g, '.')
-      .replace(/\s*\.\s*$/, '')
-      // Multiple spaces to single space
-      .replace(/\s+/g, ' ')
-      // Remove leading/trailing whitespace and dots
-      .replace(/^[.\s]+|[.\s]+$/g, '')
-      .trim();
-    
-    // If clean content is too short or empty, try to extract meaningful content
-    if (cleanContent.length < 20) {
-      // Split original content into lines and find the meaningful content
-      const lines = rawContent.split(/[\n.]/).map(line => line.trim()).filter(line => line.length > 10);
-      
-      for (const line of lines) {
-        // Skip lines that are just metadata
-        if (!/^(Submitted by|Reported|Vote|Comments|Other|Category|Threat detected|at \d{4})/i.test(line) &&
-            !/^\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago/i.test(line) &&
-            !/^https?:\/\//i.test(line) &&
-            !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(line)) {
-          cleanContent = line.trim();
+  }
+  
+  // If still no domain, look for domains in the content (more permissive search)
+  if (!reportedDomain) {
+    // Look for domain patterns throughout the text
+    const domainMatches = content.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g);
+    if (domainMatches) {
+      for (const potentialDomain of domainMatches) {
+        const domain = potentialDomain.trim();
+        // Validate it's a proper domain
+        if (domain.length >= 4 &&
+            domain.includes('.') &&
+            !domain.match(/^[a-z]+\.[A-Z]/) && // Reject patterns like "quickly.Submitted"
+            !domain.match(/\.(jpg|png|gif|pdf|doc|txt|zip)$/i) && // Not file extensions
+            domain.match(/\.(com|org|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc)$/i)) {
+          reportedDomain = domain;
           break;
         }
       }
     }
-    
-    // Final cleanup - remove any remaining concatenated elements
-    cleanContent = cleanContent
-      .replace(/\b[a-zA-Z0-9.-]+\.(?:com|org|net|io|co|uk|de|fr)\/[^\s]*/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    
-    return {
-      cleanContent,
-      author,
-      category,
-      reportedDomain,
-      reportedAddress
-    };
   }
+  
+  // Also check the original raw content for domains that might have been cleaned out
+  if (!reportedDomain) {
+    const rawDomainMatches = rawContent.match(/\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/g);
+    if (rawDomainMatches) {
+      for (const potentialDomain of rawDomainMatches) {
+        const domain = potentialDomain.trim();
+        if (domain.length >= 4 &&
+            domain.includes('.') &&
+            !domain.match(/^[a-z]+\.[A-Z]/) &&
+            !domain.match(/\.(jpg|png|gif|pdf|doc|txt|zip)$/i) &&
+            domain.match(/\.(com|org|net|io|co|uk|de|fr|gov|edu|mil|int|eu|us|ca|au|jp|cn|ru|br|in|mx|it|es|pl|nl|se|no|dk|fi|ch|at|be|cz|sk|hu|ro|bg|hr|si|lt|lv|ee|gr|pt|ie|lu|mt|cy|is|li|ad|mc|sm|va|md|ua|by|rs|me|mk|al|ba|xk|am|az|ge|kz|kg|tj|tm|uz|mn|pk|bd|lk|np|bt|mm|th|la|kh|vn|my|sg|id|ph|tl|pg|sb|vu|fj|to|ws|ki|nr|tv|fm|mh|pw|gu|as|mp|vi|pr|cr|pa|ni|hn|sv|gt|bz|mx|do|ht|jm|cu|bs|bb|tt|gd|lc|vc|ag|kn|dm|gp|mq|bl|mf|sx|cw|aw|tc|vg|ai|ms|ky|bm|gl|fo|sj|ax|gg|je|im|gi|va|sm|ad|li|mc)$/i)) {
+          reportedDomain = domain;
+          break;
+        }
+      }
+    }
+  }
+  
+  // Clean up domain - remove trailing periods and validate
+  if (reportedDomain) {
+    reportedDomain = reportedDomain.replace(/[.,;]+$/, '');
+    
+    // Final validation - reject if it looks like random text
+    if (reportedDomain.match(/^[a-z]+\.[A-Z]/) || // like "quickly.Submitted"
+        reportedDomain.length < 4 || 
+        reportedDomain.split('.').some(part => part.length < 1)) {
+      reportedDomain = '';
+    }
+  }
+  
+  // Extract reported address
+  const addressMatch = content.match(/Reported\s+Address\s*([a-zA-Z0-9]+)/i);
+  const reportedAddress = addressMatch ? addressMatch[1].trim() : '';
+  
+  // Clean the content by removing extracted parts and duplicated info
+  let cleanContent = content
+    // Remove category-related words that might be duplicated in content
+    .replace(/^(Phishing|Rug Pull|Other Blackmail|Sextortion|Ransomware|Impersonation|Fake Returns|Hack - Other|NFT Airdrop|Fake Project|Romance|Pigbutchering|Contract Exploit|Donation Impersonation)\s*Scam\s*/i, '')
+    .replace(/^(Phishing|Rug Pull|Other Blackmail|Sextortion|Ransomware|Impersonation|Fake Returns|Hack|NFT Airdrop|Fake Project|Romance|Pigbutchering|Contract Exploit|Donation Impersonation)\s*/i, '')
+    .replace(/^Scam\s*/i, '')
+    // Remove "Submitted by" lines completely
+    .replace(/Submitted by\s+[^.\n]*(?:\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)?[.\n]*/gi, '')
+    // Remove time ago patterns at the end and in middle
+    .replace(/\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\s*/gi, '')
+    // Remove "Reported Domain" lines
+    .replace(/Reported\s+Domain\s+[^\s\n]+\s*/gi, '')
+    // Remove "Reported Address" lines  
+    .replace(/Reported\s+Address\s*[a-zA-Z0-9]+\s*/gi, '')
+    // Remove timestamp patterns like "2025-06-03T12:56:33.753Z"
+    .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\b/gi, '')
+    // Remove date patterns like "at 2025-06-03"
+    .replace(/\bat\s+\d{4}-\d{2}-\d{2}[^\s]*/gi, '')
+    // Remove "Threat detected at" patterns
+    .replace(/Threat detected at[^.]*\./gi, '')
+    // Remove domain fragments that got concatenated
+    .replace(/[a-zA-Z0-9.-]+\.(?:com|org|net|io|co|uk|de|fr|squarespace\.com)(?:\/[^\s]*)?/gi, '')
+    // Remove URL fragments
+    .replace(/https?:\/\/[^\s]+/gi, '')
+    // Remove other metadata patterns
+    .replace(/Vote\s*\d*\s*/gi, '')
+    .replace(/Comments?\s*\d*\s*/gi, '')
+    .replace(/Other:\s*/gi, '')
+    // Clean up author names that got concatenated
+    .replace(/\b(PhishFort|Metamask|Binance|Coinbase|TrustWallet)\s*\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago\b/gi, '')
+    // Remove pattern like "classified as infringement"
+    .replace(/,?\s*classified as [^.,\n]*/gi, '')
+    // Fix common concatenation issues
+    .replace(/([a-z])(\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 $2')
+    .replace(/([.!?])([A-Z])/g, '$1 $2')
+    // Remove multiple dots and clean punctuation
+    .replace(/\.{2,}/g, '.')
+    .replace(/\s*\.\s*$/, '')
+    // Multiple spaces to single space
+    .replace(/\s+/g, ' ')
+    // Remove leading/trailing whitespace and dots
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+    .trim();
+  
+  // If clean content is too short or empty, try to extract meaningful content
+  if (cleanContent.length < 20) {
+    // Split original content into lines and find the meaningful content
+    const lines = rawContent.split(/[\n.]/).map(line => line.trim()).filter(line => line.length > 10);
+    
+    for (const line of lines) {
+      // Skip lines that are just metadata
+      if (!/^(Submitted by|Reported|Vote|Comments|Other|Category|Threat detected|at \d{4})/i.test(line) &&
+          !/^\d+\s+(?:seconds?|minutes?|hours?|days?)\s+ago/i.test(line) &&
+          !/^https?:\/\//i.test(line) &&
+          !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(line)) {
+        cleanContent = line.trim();
+        break;
+      }
+    }
+  }
+  
+  // Final cleanup - remove any remaining concatenated elements
+  cleanContent = cleanContent
+    .replace(/\b[a-zA-Z0-9.-]+\.(?:com|org|net|io|co|uk|de|fr)\/[^\s]*/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  return {
+    cleanContent,
+    author,
+    category,
+    reportedDomain,
+    reportedAddress
+  };
+}
 
   private async extractReportUrlByClick(page: Page, reportElement: any, index: number): Promise<{reportUrl: string, reportId: string, success: boolean}> {
     try {
