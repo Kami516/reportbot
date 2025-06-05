@@ -95,7 +95,13 @@ class CleanReportMonitor {
       '--no-zygote',
       '--single-process',
       '--disable-gpu',
-      '--disable-web-security'
+      '--disable-web-security',
+      '--ignore-ssl-errors',
+      '--ignore-certificate-errors',
+      '--ignore-certificate-errors-spki-list',
+      '--disable-ssl-false-start',
+      '--disable-tls13-variants',
+      '--ssl-key-log-file=/dev/null'
     ];
 
     if (this.proxyConfig) {
@@ -685,8 +691,8 @@ private cleanReportContent(rawContent: string): {
       
       // Open new tab for clicking to avoid disrupting main page
       const newPage = await page.browser().newPage();
-      await newPage.setDefaultNavigationTimeout(120000); // DODAJ
-      await newPage.setDefaultTimeout(120000);
+      await newPage.setDefaultNavigationTimeout(90000); // DODAJ
+      await newPage.setDefaultTimeout(90000);
       
       if (this.proxyConfig?.username) {
         await newPage.authenticate({
@@ -699,8 +705,8 @@ private cleanReportContent(rawContent: string): {
 
       // Go to main page in new tab
       const mainUrl = `https://www.chainabuse.com/reports?sort=newest&_t=${Date.now()}`;
-      await newPage.goto(mainUrl, { waitUntil: 'networkidle0', timeout: 120000 });
-      await newPage.waitForSelector('.create-ScamReportCard', { timeout: 90000 });
+      await newPage.goto(mainUrl, { waitUntil: 'networkidle0', timeout: 90000 });
+      await newPage.waitForSelector('.create-ScamReportCard', { timeout: 95000 });
       await new Promise(resolve => setTimeout(resolve, 8000));
 
       let finalUrl = '';
@@ -831,7 +837,7 @@ private cleanReportContent(rawContent: string): {
       
       await page.goto(url, { 
         waitUntil: 'networkidle0',
-        timeout: 120000 
+        timeout: 90000 
       });
 
       await page.waitForSelector('.create-ScamReportCard', { timeout: 90000 });
@@ -859,7 +865,7 @@ private cleanReportContent(rawContent: string): {
 
       // Extract URLs for first few reports by clicking
       const reportsData: ReportData[] = [];
-      const maxClickTests = Math.min(6, basicReportsData.length);
+      const maxClickTests = Math.min(3, basicReportsData.length);
       
       for (let i = 0; i < basicReportsData.length; i++) {
         const basicData = basicReportsData[i];
@@ -974,6 +980,8 @@ private cleanReportContent(rawContent: string): {
           const timeAgoText = currentReport.timeAgo.toLowerCase();
           
           const isVeryFresh = (
+            timeAgoText.includes('5 minutes ago') ||
+            timeAgoText.includes('4 minutes ago') ||
             timeAgoText.includes('3 minutes ago') ||
             timeAgoText.includes('2 minutes ago') ||
             timeAgoText.includes('4 minutes ago') ||
