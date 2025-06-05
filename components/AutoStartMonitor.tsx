@@ -1,4 +1,4 @@
-// components/SimpleAutoMonitor.tsx - English Version
+// components/AutoStartMonitor.tsx - Monitor który automatycznie startuje
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
@@ -10,21 +10,24 @@ interface MonitorStats {
   lastCheck: string | null;
   errors: string[];
   recentActivity: string[];
+  autoStarted: boolean;
 }
 
-export default function SimpleAutoMonitor() {
+export default function AutoStartMonitor() {
   const [stats, setStats] = useState<MonitorStats>({
     isRunning: false,
     totalChecks: 0,
     totalNewReports: 0,
     lastCheck: null,
     errors: [],
-    recentActivity: []
+    recentActivity: [],
+    autoStarted: false
   });
 
   const [countdown, setCountdown] = useState<number>(0);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
+  const hasAutoStarted = useRef(false);
 
   const addActivity = (message: string) => {
     const timestamp = new Date().toLocaleTimeString('en-US');
@@ -57,13 +60,13 @@ export default function SimpleAutoMonitor() {
 
       if (data.success) {
         if (data.newReports > 0) {
-          addActivity(`🚨 Found ${data.newReports} new report(s)!`);
+          addActivity(`🚨 Found ${data.newReports} new reports!`);
           setStats(prev => ({
             ...prev,
             totalNewReports: prev.totalNewReports + data.newReports
           }));
         } else {
-          addActivity('✅ No new reports');
+          addActivity('✅ No new reports found');
         }
       } else {
         const errorMsg = data.message || 'Unknown error';
@@ -85,12 +88,20 @@ export default function SimpleAutoMonitor() {
     }
   };
 
-  const startMonitoring = async () => {
+  const startMonitoring = async (isAutoStart = false) => {
     if (stats.isRunning) return;
 
-    addActivity('🚀 Starting automatic monitoring...');
+    if (isAutoStart) {
+      addActivity('🚀 AUTOSTART: Starting monitor automatically...');
+    } else {
+      addActivity('🚀 Starting monitor manually...');
+    }
     
-    setStats(prev => ({ ...prev, isRunning: true }));
+    setStats(prev => ({ 
+      ...prev, 
+      isRunning: true,
+      autoStarted: isAutoStart
+    }));
 
     // Initial check
     await runSingleCheck();
@@ -141,6 +152,19 @@ export default function SimpleAutoMonitor() {
     addActivity('🧹 Statistics cleared');
   };
 
+  // Auto-start effect - uruchamia się automatycznie po załadowaniu komponentu
+  useEffect(() => {
+    const autoStartTimer = setTimeout(() => {
+      if (!hasAutoStarted.current && !stats.isRunning) {
+        hasAutoStarted.current = true;
+        console.log('🚀 Auto-starting ChainAbuse monitor...');
+        startMonitoring(true);
+      }
+    }, 2000); // 2 sekundy opóźnienia dla stabilności
+
+    return () => clearTimeout(autoStartTimer);
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -149,15 +173,47 @@ export default function SimpleAutoMonitor() {
     };
   }, []);
 
+  // Show loading screen briefly
+  const [isInitializing, setIsInitializing] = useState(true);
+  useEffect(() => {
+    const timer = setTimeout(() => setIsInitializing(false), 1000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (isInitializing) {
+    return (
+      <div className="max-w-6xl mx-auto p-6 bg-white dark:bg-gray-900 rounded-lg shadow-lg">
+        <div className="flex items-center justify-center py-12">
+          <div className="text-center">
+            <div className="animate-spin w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+              Initializing ChainAbuse Monitor...
+            </h2>
+            <p className="text-gray-600 dark:text-gray-300 mt-2">
+              Monitor will start automatically in a moment
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-6xl mx-auto p-6 bg-white dark:bg-gray-900 rounded-lg shadow-lg">
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-          🤖 ChainAbuse Monitor - Auto 30s
+          🤖 ChainAbuse Monitor - AutoStart {stats.autoStarted && '⚡'}
         </h1>
         <p className="text-gray-600 dark:text-gray-300">
-          Automatically checks for new reports every 30 seconds
+          Monitor automatically started - checking every 30 seconds
         </p>
+        {stats.autoStarted && (
+          <div className="mt-2 px-3 py-1 bg-green-100 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded-md inline-block">
+            <span className="text-green-800 dark:text-green-200 text-sm font-medium">
+              ⚡ Started automatically on application launch
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Status Cards */}
@@ -192,7 +248,7 @@ export default function SimpleAutoMonitor() {
 
         <div className="bg-purple-50 border-2 border-purple-300 dark:bg-purple-900/20 dark:border-purple-700 p-4 rounded-lg">
           <p className="text-sm font-medium text-gray-600 dark:text-gray-300">
-            {stats.isRunning ? 'Next in' : 'Last check'}
+            {stats.isRunning ? 'Next in' : 'Last'}
           </p>
           <p className="text-lg font-semibold text-purple-600">
             {stats.isRunning 
@@ -224,17 +280,17 @@ export default function SimpleAutoMonitor() {
       {/* Controls */}
       <div className="flex flex-wrap gap-3 mb-6">
         <button
-          onClick={startMonitoring}
+          onClick={() => startMonitoring(false)}
           disabled={stats.isRunning}
           className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
         >
           {stats.isRunning ? (
             <>
               <div className="w-2 h-2 bg-green-300 rounded-full animate-pulse"></div>
-              Monitor Active
+              Monitor active
             </>
           ) : (
-            '▶️ Start Monitor'
+            '▶️ Restart monitor'
           )}
         </button>
 
@@ -261,14 +317,14 @@ export default function SimpleAutoMonitor() {
           disabled={stats.isRunning}
           className="px-4 py-3 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors"
         >
-          🔍 Test Now
+          🔍 Test now
         </button>
 
         <button
           onClick={() => window.open('/', '_blank')}
           className="px-4 py-3 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-medium transition-colors"
         >
-          🏠 Main Page
+          🏠 Home page
         </button>
       </div>
 
@@ -290,7 +346,7 @@ export default function SimpleAutoMonitor() {
                 </div>
               ))
             ) : (
-              <p className="text-sm text-gray-500 dark:text-gray-400">No activity yet</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">No activity</p>
             )}
           </div>
         </div>
@@ -314,27 +370,33 @@ export default function SimpleAutoMonitor() {
         </div>
       </div>
 
-      {/* Instructions */}
-      <div className="mt-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-        <h3 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">💡 How it works</h3>
-        <div className="text-sm text-blue-700 dark:text-blue-300 space-y-1">
-          <p>• Monitor checks ChainAbuse every 30 seconds using cache-busting</p>
-          <p>• Each check is like "refreshing the page" - bypasses cache</p>
+      {/* Auto-start Status */}
+      <div className="mt-6 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
+        <h3 className="font-semibold text-green-800 dark:text-green-200 mb-2 flex items-center">
+          ⚡ Monitor AutoStart
+          {stats.autoStarted && <span className="ml-2 text-xs bg-green-200 dark:bg-green-800 px-2 py-1 rounded">ACTIVE</span>}
+        </h3>
+        <div className="text-sm text-green-700 dark:text-green-300 space-y-1">
+          <p>• Monitor automatically starts after page load</p>
+          <p>• Checks ChainAbuse every 30 seconds using cache-busting</p>
           <p>• New reports are automatically sent to Telegram</p>
-          <p>• Progress bar shows time until next check</p>
           <p>• You can safely close this tab - monitor runs server-side</p>
+          {stats.autoStarted && (
+            <p className="font-medium">• ✅ This monitor was started automatically on application launch</p>
+          )}
         </div>
       </div>
 
       {/* Current Status Summary */}
       {stats.isRunning && (
-        <div className="mt-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
-          <h3 className="font-semibold text-green-800 dark:text-green-200 mb-2">
-            🔄 Monitor Active
+        <div className="mt-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+          <h3 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">
+            🔄 Monitor active {stats.autoStarted && '(AutoStart)'}
           </h3>
-          <p className="text-sm text-green-700 dark:text-green-300">
-            Monitor is checking for new reports every 30 seconds. If a new report appears on ChainAbuse, 
+          <p className="text-sm text-blue-700 dark:text-blue-300">
+            Monitor checks for new reports every 30 seconds. If a new report appears on ChainAbuse, 
             you'll get a Telegram notification within 30 seconds!
+            {stats.autoStarted && ' Monitor was started automatically on application launch.'}
           </p>
         </div>
       )}
