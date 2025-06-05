@@ -1,24 +1,35 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  experimental: {
+    serverComponentsExternalPackages: ['https-proxy-agent']
+  },
   
-  // Custom webpack configuration to auto-start monitor
-  webpack: (config, { dev, isServer }) => {
-    // Only run in development mode and on server-side
-    if (dev && isServer) {
-      // Import and start the monitor when webpack builds
-      const { startServerMonitor } = require('./startup/monitor');
-      
-      // Start monitor after a delay to ensure everything is ready
-      setTimeout(() => {
-        console.log('🚀 Starting ChainAbuse monitor automatically...');
-        startServerMonitor();
-      }, 10000); // 10 second delay for full Next.js initialization
+  // Auto-start monitor on development server ready
+  async rewrites() {
+    // Trigger auto-monitor start when server is ready
+    if (process.env.NODE_ENV === 'development') {
+      setTimeout(async () => {
+        try {
+          console.log('🚀 Auto-starting ChainAbuse monitor...');
+          
+          const response = await fetch('http://localhost:3000/api/auto-monitor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'start' })
+          });
+          
+          if (response.ok) {
+            console.log('✅ ChainAbuse monitor auto-started successfully!');
+          }
+        } catch (error) {
+          console.log('⏳ Monitor will start when first API call is made');
+        }
+      }, 5000);
     }
     
-    return config;
-  },
+    return [];
+  }
 };
 
 export default nextConfig;
