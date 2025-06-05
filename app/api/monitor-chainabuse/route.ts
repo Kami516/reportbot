@@ -109,14 +109,40 @@ class CleanReportMonitor {
     });
   }
 
+  // Funkcja do czyszczenia Lorem ipsum z treści
+  private removeLoremIpsum(content: string): string {
+    let cleanContent = content;
+    
+    // Usuń Lorem ipsum po "For security reasons..." 
+    cleanContent = cleanContent.replace(
+      /(For security reasons and to protect investigations, this report is currently only shared with Law Enforcement Partners\.?\s*)(Lorem ipsum[\s\S]*)/i,
+      '$1'
+    );
+    
+    // Usuń samodzielny Lorem ipsum tekst
+    cleanContent = cleanContent.replace(/Lorem ipsum[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, '');
+    
+    // Usuń dodatkowe puste linie
+    cleanContent = cleanContent.replace(/\n{3,}/g, '\n\n').trim();
+    
+    return cleanContent;
+  }
+
   private async sendTelegramMessage(message: string): Promise<void> {
     try {
+      // 🧹 USUŃ LOREM IPSUM Z TREŚCI
+      const cleanMessage = this.removeLoremIpsum(message);
+      
+      if (cleanMessage !== message) {
+        console.log('🧹 Lorem ipsum removed from message');
+      }
+
       const response = await fetch(`https://api.telegram.org/bot${this.telegramBotToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: this.telegramChatId,
-          text: message,
+          text: cleanMessage, // Wysyłaj oczyszczoną wiadomość
           parse_mode: 'HTML',
           disable_web_page_preview: false
         }),
