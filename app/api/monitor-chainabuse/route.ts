@@ -966,7 +966,6 @@ private cleanReportContent(rawContent: string): {
           const timeAgoText = currentReport.timeAgo.toLowerCase();
           
           const isVeryFresh = (
-            timeAgoText.includes('2 minutes ago') ||
             timeAgoText.includes('1 minute ago') ||
             timeAgoText.includes('0 minutes ago') ||
             timeAgoText.includes('few seconds ago') ||
