@@ -1,4 +1,5 @@
 // app/monitor/page.tsx - Test page (moved from main page)
+"use client";
 import LiveTestTool from '../../components/LiveTestTool';
 
 export default function MonitorPage() {
