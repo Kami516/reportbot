@@ -6,8 +6,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-     "postinstall": "if [ \"$NODE_ENV\" = \"production\" ]; then bash scripts/install-chrome.sh || echo 'Chrome install failed, using system chrome'; fi"
+    "lint": "next lint"
   },
   "dependencies": {
     "@types/selenium-webdriver": "^4.1.28",
