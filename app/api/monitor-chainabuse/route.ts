@@ -95,13 +95,7 @@ class CleanReportMonitor {
       '--no-zygote',
       '--single-process',
       '--disable-gpu',
-      '--disable-web-security',
-      '--ignore-ssl-errors',
-      '--ignore-certificate-errors',
-      '--ignore-certificate-errors-spki-list',
-      '--disable-ssl-false-start',
-      '--disable-tls13-variants',
-      '--ssl-key-log-file=/dev/null'
+      '--disable-web-security'
     ];
 
     if (this.proxyConfig) {
@@ -111,8 +105,7 @@ class CleanReportMonitor {
     return await puppeteer.launch({
       headless: true,
       args,
-      defaultViewport: { width: 1920, height: 1080 },
-      timeout: 180000
+      defaultViewport: { width: 1920, height: 1080 }
     });
   }
 
@@ -691,8 +684,6 @@ private cleanReportContent(rawContent: string): {
       
       // Open new tab for clicking to avoid disrupting main page
       const newPage = await page.browser().newPage();
-      await newPage.setDefaultNavigationTimeout(90000); // DODAJ
-      await newPage.setDefaultTimeout(90000);
       
       if (this.proxyConfig?.username) {
         await newPage.authenticate({
@@ -705,9 +696,9 @@ private cleanReportContent(rawContent: string): {
 
       // Go to main page in new tab
       const mainUrl = `https://www.chainabuse.com/reports?sort=newest&_t=${Date.now()}`;
-      await newPage.goto(mainUrl, { waitUntil: 'networkidle0', timeout: 90000 });
-      await newPage.waitForSelector('.create-ScamReportCard', { timeout: 95000 });
-      await new Promise(resolve => setTimeout(resolve, 8000));
+      await newPage.goto(mainUrl, { waitUntil: 'networkidle0', timeout: 30000 });
+      await newPage.waitForSelector('.create-ScamReportCard', { timeout: 15000 });
+      await new Promise(resolve => setTimeout(resolve, 2000));
 
       let finalUrl = '';
       
@@ -738,9 +729,9 @@ private cleanReportContent(rawContent: string): {
           element.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, reportElements[index]);
         
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise(resolve => setTimeout(resolve, 1000));
         await reportElements[index].click();
-        await new Promise(resolve => setTimeout(resolve, 8000));
+        await new Promise(resolve => setTimeout(resolve, 3000));
         
         const currentUrl = newPage.url();
         if (currentUrl.includes('/report/')) {
@@ -837,11 +828,11 @@ private cleanReportContent(rawContent: string): {
       
       await page.goto(url, { 
         waitUntil: 'networkidle0',
-        timeout: 90000 
+        timeout: 30000 
       });
 
-      await page.waitForSelector('.create-ScamReportCard', { timeout: 90000 });
-      await new Promise(resolve => setTimeout(resolve, 8000));
+      await page.waitForSelector('.create-ScamReportCard', { timeout: 15000 });
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
       // Get basic report data first
       const basicReportsData = await page.evaluate(() => {
@@ -880,11 +871,6 @@ private cleanReportContent(rawContent: string): {
           reportId = clickResult.reportId;
           clickSuccess = clickResult.success;
           navigationUrl = clickResult.reportUrl;
-        }
-
-        if (i < maxClickTests - 1) {
-          console.log(`⏳ Waiting 3s between click attempts...`);
-          await new Promise(resolve => setTimeout(resolve, 3000));
         }
 
         reportsData.push({
@@ -980,11 +966,6 @@ private cleanReportContent(rawContent: string): {
           const timeAgoText = currentReport.timeAgo.toLowerCase();
           
           const isVeryFresh = (
-            timeAgoText.includes('5 minutes ago') ||
-            timeAgoText.includes('4 minutes ago') ||
-            timeAgoText.includes('3 minutes ago') ||
-            timeAgoText.includes('2 minutes ago') ||
-            timeAgoText.includes('4 minutes ago') ||
             timeAgoText.includes('1 minute ago') ||
             timeAgoText.includes('0 minutes ago') ||
             timeAgoText.includes('few seconds ago') ||
