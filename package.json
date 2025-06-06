@@ -6,7 +6,11 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "start:prod": "NODE_ENV=production next start",
+    "start:monitor": "NODE_ENV=production AUTO_START_MONITOR=true next start",
+    "lint": "next lint",
+    "clean": "rm -rf .next",
+    "restart": "pnpm run clean && pnpm run build && pnpm run start:monitor"
   },
   "dependencies": {
     "@types/selenium-webdriver": "^4.1.28",

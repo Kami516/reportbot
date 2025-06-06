@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
       setTimeout(async () => {
         try {
           console.log('🚀 Auto-starting ChainAbuse monitor...');
+
+          const baseUrl = process.env.NEXT_PUBLIC_URL || 
+          process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` :
+          'http://localhost:3000';
           
           const response = await fetch('http://localhost:3000/api/auto-monitor', {
             method: 'POST',
