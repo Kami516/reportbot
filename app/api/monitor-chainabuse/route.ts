@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import puppeteer, { Browser, Page } from 'puppeteer';
-import { writeFileSync, readFileSync, existsSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, appendFileSync } from 'fs';
 import { join } from 'path';
 
 interface ReportSnapshot {
@@ -37,11 +37,13 @@ class CleanReportMonitor {
   private checkCount: number = 0;
   private proxyConfig: any;
   private sentReportsFile: string;
+  private addressesLogFile: string;
 
   constructor() {
     this.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN!;
     this.telegramChatId = process.env.TELEGRAM_CHAT_ID!;
     this.sentReportsFile = join(process.cwd(), 'sent-reports.json');
+    this.addressesLogFile = join(process.cwd(), 'reported-addresses.txt');
     
     if (process.env.PROXY_CONFIG) {
       const [host, port, username, password] = process.env.PROXY_CONFIG.split(':');
@@ -84,6 +86,19 @@ class CleanReportMonitor {
       console.error('❌ Error saving sent reports file:', error);
     }
   }
+private saveAddressesToFile(addresses: string[]): void {
+  try {
+    if (addresses.length === 0) return;
+    
+    addresses.forEach(address => {
+      appendFileSync(this.addressesLogFile, `"${address}"\n`, 'utf8');
+    });
+    
+    console.log(`💾 Saved ${addresses.length} addresses to log file`);
+  } catch (error) {
+    console.error('❌ Error saving addresses to file:', error);
+  }
+}
 
   private async launchBrowser(): Promise<Browser> {
     const args = [
@@ -441,6 +456,121 @@ class CleanReportMonitor {
     
     return 'Other';
   }
+  // 🔧 NOWA FUNKCJA: Wyciąga adresy TYLKO z fragmentu PO "Amount Lost"
+private extractAddressesAfterAmountLost(textContent: string): string[] {
+  console.log('💳 NEW METHOD: Extracting addresses ONLY after "Amount Lost" section...');
+  
+  const reportedAddresses: string[] = [];
+  
+  // KROK 1: Znajdź pozycję "Amount Lost" w tekście
+  const amountLostIndex = textContent.toLowerCase().indexOf('amount lost');
+  
+  if (amountLostIndex === -1) {
+    console.log('💳 No "Amount Lost" found - checking entire text (fallback)');
+    // Jeśli nie ma "Amount Lost", sprawdź czy są sekcje "Reported Address" lub "Reported Domain"
+    const reportedIndex = Math.min(
+      textContent.toLowerCase().indexOf('reported address') !== -1 ? textContent.toLowerCase().indexOf('reported address') : Infinity,
+      textContent.toLowerCase().indexOf('reported domain') !== -1 ? textContent.toLowerCase().indexOf('reported domain') : Infinity
+    );
+    
+    if (reportedIndex === Infinity) {
+      console.log('💳 No "Reported" sections found - no addresses to extract');
+      return [];
+    }
+    
+    // Użyj fragmentu od "Reported" sekcji
+    const afterReportedText = textContent.substring(reportedIndex);
+    console.log('💳 Using text after "Reported" sections:', afterReportedText.substring(0, 200));
+    return this.extractAddressesFromText(afterReportedText);
+  }
+  
+  // KROK 2: Weź TYLKO fragment tekstu PO "Amount Lost"
+  const afterAmountLostText = textContent.substring(amountLostIndex);
+  console.log('💳 Text after "Amount Lost":', afterAmountLostText.substring(0, 300));
+  
+  // KROK 3: Wyciągnij adresy z tego fragmentu
+  return this.extractAddressesFromText(afterAmountLostText);
+}
+
+// Helper function dla wyciągania adresów z tekstu
+private extractAddressesFromText(text: string): string[] {
+  const reportedAddresses: string[] = [];
+  
+  const allPotentialMatches = [
+    ...text.matchAll(/([13][1-9A-HJ-NP-Za-km-z]{20,40})/g),           // Bitcoin Legacy
+    ...text.matchAll(/(bc1[02-9ac-hj-np-z]{30,70})/g),                // Bitcoin Bech32  
+    ...text.matchAll(/(ltc1[02-9ac-hj-np-z]{30,70})/g),               // Litecoin Bech32
+    ...text.matchAll(/(addr1[a-z0-9]{50,120})/g),                     // Cardano (ADA)
+    ...text.matchAll(/(0x[a-fA-F0-9]{40})/g),                         // Ethereum/Polygon/etc
+    ...text.matchAll(/(T[1-9A-HJ-NP-Za-km-z]{30,40})/g),              // Tron
+    ...text.matchAll(/([LM][1-9A-HJ-NP-Za-km-z]{20,40})/g),           // Litecoin Legacy
+    ...text.matchAll(/([1-9A-HJ-NP-Za-km-z]{32,44})/g),               // Solana
+  ];
+
+  console.log(`💳 Found ${allPotentialMatches.length} potential address matches in fragment`);
+
+  for (const match of allPotentialMatches) {
+    let cleanedAddress = match[1];
+    
+    // Podstawowe czyszczenie
+    cleanedAddress = cleanedAddress
+      .replace(/^(ddress|Address|eported|Reported)/i, '')
+      .replace(/(Reported|Domain|Address|Reporte|Addres)$/i, '')
+      .replace(/^(TRC20|USDT|BTC|ETH)/i, '')
+      .trim();
+
+    // Walidacja adresu
+    let isValidAddress = false;
+    let addressType = '';
+
+    if (/^T[1-9A-HJ-NP-Za-km-z]{32,34}$/.test(cleanedAddress)) {
+      isValidAddress = true;
+      addressType = 'Tron';
+    } else if (/^[13][1-9A-HJ-NP-Za-km-z]{25,34}$/.test(cleanedAddress)) {
+  // DODATKOWO: sprawdź czy to nie jest fragment adresu Ethereum
+  const isEthereumFragment = text.includes(`0x${cleanedAddress}`) || 
+                            text.includes(`${cleanedAddress}`) && 
+                            /0x[a-fA-F0-9]{40}/.test(text);
+  
+  if (!isEthereumFragment) {
+    isValidAddress = true;
+    addressType = 'Bitcoin Legacy';
+  } else {
+    console.log(`💳 Rejected Bitcoin fragment (part of Ethereum): ${cleanedAddress}`);
+  }
+  } else if (/^[13][1-9A-HJ-NP-Za-km-z]{24,33}$/.test(cleanedAddress)) {
+      isValidAddress = true;
+      addressType = 'Bitcoin Legacy';
+    } else if (/^0x[a-fA-F0-9]{40}$/.test(cleanedAddress)) {
+      isValidAddress = true;
+      addressType = 'Ethereum';
+    } else if (/^bc1[02-9ac-hj-np-z]{38,61}$/.test(cleanedAddress)) {
+      isValidAddress = true;
+      addressType = 'Bitcoin Bech32';
+    } else if (/^[LM][1-9A-HJ-NP-Za-km-z]{25,33}$/.test(cleanedAddress)) {
+      isValidAddress = true;
+      addressType = 'Litecoin Legacy';
+    } else if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanedAddress) && 
+               !cleanedAddress.startsWith('1') && 
+               !cleanedAddress.startsWith('3') && 
+               !cleanedAddress.startsWith('L') && 
+               !cleanedAddress.startsWith('M') && 
+               !cleanedAddress.startsWith('T')) {
+      isValidAddress = true;
+      addressType = 'Solana';
+    }
+    
+    if (isValidAddress && 
+        cleanedAddress.length >= 25 && 
+        !reportedAddresses.includes(cleanedAddress)) {
+      reportedAddresses.push(cleanedAddress);
+      console.log(`✅ Added ${addressType} address: ${cleanedAddress}`);
+    }
+  }
+  
+  console.log(`💳 Total addresses extracted from fragment: ${reportedAddresses.length}`);
+  return reportedAddresses;
+}
 
   // Zamień swoją funkcję quickAnalyzeForTelegram na tę wersję
   private quickAnalyzeForTelegram(textContent: string): {
@@ -605,188 +735,8 @@ class CleanReportMonitor {
       }
     }
 
-    // ZMIENIONE: Wyciąganie WSZYSTKICH adresów
-    const reportedAddresses: string[] = [];
-    
-console.log('💳 Searching for multiple addresses...');
-console.log('💳 Full content sample:', textContent.substring(0, 300));
-
-// KROK 1: Znajdź wszystkie potencjalne adresy z luźnymi wzorcami
-const allPotentialMatches = [
-  ...textContent.matchAll(/([13][1-9A-HJ-NP-Za-km-z]{20,40})/g),           // Bitcoin Legacy
-  ...textContent.matchAll(/(bc1[02-9ac-hj-np-z]{30,70})/g),                // Bitcoin Bech32  
-  ...textContent.matchAll(/(ltc1[02-9ac-hj-np-z]{30,70})/g),               // Litecoin Bech32
-  ...textContent.matchAll(/(addr1[a-z0-9]{50,120})/g),                     // Cardano (ADA)
-  ...textContent.matchAll(/(0x[a-fA-F0-9]{40})/g),                      // Ethereum/Polygon/Arbitrum/Avalanche
-  ...textContent.matchAll(/(T[1-9A-HJ-NP-Za-km-z]{30,40})/g),              // Tron
-  ...textContent.matchAll(/([LM][1-9A-HJ-NP-Za-km-z]{20,40})/g),           // Litecoin Legacy
-  ...textContent.matchAll(/(erd1[a-z0-9]{58})/g),                          // MultiversX/Elrond (dla Hedera)
-  ...textContent.matchAll(/([1-9A-HJ-NP-Za-km-z]{32,44})/g), 
-];
-
-console.log(`💳 Found ${allPotentialMatches.length} potential address matches`);
-
-// Zbierz wszystkie pozycje dopasowań żeby uniknąć nakładania
-const processedPositions: Array<{start: number, end: number}> = [];
-
-for (const match of allPotentialMatches) {
-  // Bezpieczne przypisanie z sprawdzeniem typu
-  const startPos = (match.index !== undefined) ? match.index : 0;
-  const endPos = startPos + match[1].length;
-  
-  // Sprawdź czy ten fragment nie nakłada się z już przetworzonymi
-  let isOverlapping = false;
-  for (const pos of processedPositions) {
-    if ((startPos >= pos.start && startPos < pos.end) || 
-        (endPos > pos.start && endPos <= pos.end)) {
-      isOverlapping = true;
-      break;
-    }
-  }
-  
-  if (isOverlapping) {
-    console.log(`💳 Skipping overlapping match: "${match[1]}" at position ${startPos}`);
-    continue;
-  }
-  
-  let rawAddress = match[1];
-  console.log(`💳 Processing raw match: "${rawAddress}" at position ${startPos}-${endPos}`);
-  
-let cleanedAddress = rawAddress;
-
-// KROK 1: Usuń tylko znane prefiksy (nie całą resztę)
-if (cleanedAddress.startsWith('ddress')) {
-  cleanedAddress = cleanedAddress.substring(6); // Usuń "ddress"
-}
-if (cleanedAddress.startsWith('Address')) {
-  cleanedAddress = cleanedAddress.substring(7); // Usuń "Address" 
-}
-if (cleanedAddress.startsWith('eported')) {
-  cleanedAddress = cleanedAddress.substring(7); // Usuń "eported"
-}
-
-// KROK 2: Usuń suffiksy - ale tylko konkretne słowa
-cleanedAddress = cleanedAddress
-  .replace(/Reported$/i, '')
-  .replace(/ReportedDomain$/i, '')
-  .replace(/ReportedAddress$/i, '')
-  .replace(/Domain$/i, '')
-  .replace(/Address$/i, '')
-  .replace(/Reporte$/i, '')
-  .replace(/Addres$/i, '')
-  .replace(/^TRC20/i, '')
-  .replace(/^USDT/i, '')
-  .replace(/^BTC/i, '')
-  .replace(/^ETH/i, '')
-  .trim();
-
-// KROK 3: Jeśli nadal nieprawidłowy, wyciągnij TYLKO pierwszy prawidłowy adres
-if (!/^(0x[a-fA-F0-9]{40}|bc1[02-9ac-hj-np-z]+|[13][1-9A-HJ-NP-Za-km-z]+|T[1-9A-HJ-NP-Za-km-z]+|[LM][1-9A-HJ-NP-Za-km-z]+|addr1[a-z0-9]+)$/.test(cleanedAddress)) {
-  const match = cleanedAddress.match(/(0x[a-fA-F0-9]{40}|bc1[02-9ac-hj-np-z]{39,62}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|T[1-9A-HJ-NP-Za-km-z]{33}|[LM][1-9A-HJ-NP-Za-km-z]{26,34}|addr1[a-z0-9]{53,103})/);
-  if (match) {
-    cleanedAddress = match[1];
-  }
-}
-    
-  console.log(`💳 Cleaned address: "${cleanedAddress}"`);
-  
-let isValidAddress = false;
-let addressType = '';
-
-if (/^bc1[02-9ac-hj-np-z]{38,61}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Bitcoin Bech32';
-} else if (/^ltc1[02-9ac-hj-np-z]{38,61}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Litecoin Bech32';
-} else if (/^addr1[a-z0-9]{50,120}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Cardano (ADA)';
-} else if (/^[13][1-9A-HJ-NP-Za-km-z]{24,33}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Bitcoin Legacy';
-} else if (/^0x[a-fA-F0-9]{40}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  // Określ typ na podstawie kontekstu - wszystkie używają tego samego formatu
-  if (textContent.toLowerCase().includes('polygon') || textContent.toLowerCase().includes('matic')) {
-    addressType = 'Polygon (MATIC)';
-  } else if (textContent.toLowerCase().includes('arbitrum')) {
-    addressType = 'Arbitrum';
-  } else if (textContent.toLowerCase().includes('avalanche') || textContent.toLowerCase().includes('avax')) {
-    addressType = 'Avalanche (AVAX)';
-  } else if (textContent.toLowerCase().includes('base')) {
-    addressType = 'Base';
-  } else {
-    addressType = 'Ethereum'; // Domyślnie Ethereum
-  }
-} else if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Tron';
-} else if (/^[LM][1-9A-HJ-NP-Za-km-z]{25,33}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Litecoin Legacy';
-} else if (/^0\.0\.[0-9]+$/.test(cleanedAddress)) {
-  // Hedera używa formatu 0.0.123456
-  isValidAddress = true;
-  addressType = 'Hedera (HBAR)';
-} else if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanedAddress) && 
-           !cleanedAddress.startsWith('1') && 
-           !cleanedAddress.startsWith('3') && 
-           !cleanedAddress.startsWith('L') && 
-           !cleanedAddress.startsWith('M') && 
-           !cleanedAddress.startsWith('T')) {
-  // Solana, Base58 format - ale nie inne znane formaty
-} else if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanedAddress) && 
-           !cleanedAddress.startsWith('1') && 
-           !cleanedAddress.startsWith('3') && 
-           !cleanedAddress.startsWith('L') && 
-           !cleanedAddress.startsWith('M') && 
-           !cleanedAddress.startsWith('T')) {
-  // Solana uses Base58, 32-44 characters
-  isValidAddress = true;
-  addressType = 'Solana (SOL)';
-}
-  
-  console.log(`💳 Validation: ${cleanedAddress} is ${isValidAddress ? 'VALID' : 'INVALID'} ${addressType}`);
-  
-  if (isValidAddress && 
-    cleanedAddress.length >= 25 && 
-    !reportedAddresses.includes(cleanedAddress)) {
-  
-  // NOWY: Sprawdź czy nowy adres nie jest fragmentem już dodanego adresu
-  let isDuplicateFragment = false;
-  
-  for (const existingAddress of reportedAddresses) {
-    // Sprawdź czy nowy adres jest fragmentem istniejącego
-    if (existingAddress.includes(cleanedAddress) && existingAddress !== cleanedAddress) {
-      console.log(`💳 Skipping fragment: "${cleanedAddress}" is part of "${existingAddress}"`);
-      isDuplicateFragment = true;
-      break;
-    }
-    
-    // Sprawdź czy istniejący adres jest fragmentem nowego (zamień go)
-    if (cleanedAddress.includes(existingAddress) && existingAddress !== cleanedAddress) {
-      console.log(`💳 Replacing fragment: "${existingAddress}" with full address "${cleanedAddress}"`);
-      const index = reportedAddresses.indexOf(existingAddress);
-      reportedAddresses[index] = cleanedAddress;
-      isDuplicateFragment = true;
-      break;
-    }
-  }
-  
-  if (!isDuplicateFragment) {
-    reportedAddresses.push(cleanedAddress);
-    console.log(`✅ Added ${addressType} address: ${cleanedAddress}`);
-    processedPositions.push({ start: startPos, end: endPos });
-  }
-} else if (!isValidAddress) {
-  console.log(`❌ Rejected invalid address: ${cleanedAddress}`);
-} else {
-  console.log(`⚠️ Skipped duplicate address: ${cleanedAddress}`);
-}
-}
-    
-    console.log(`💳 Total addresses found: ${reportedAddresses.length}`);
+ // ZMIENIONE: Wyciąganie adresów TYLKO z fragmentu po "Amount Lost"
+const reportedAddresses = this.extractAddressesAfterAmountLost(textContent);
 
     // Extract clean content - pozostaje bez zmian
     let cleanContent = textContent
@@ -1020,187 +970,8 @@ if (/^bc1[02-9ac-hj-np-z]{38,61}$/.test(cleanedAddress)) {
       }
     }
     
- // STEP 5: ZMIENIONE - Extract WSZYSTKIE reported addresses
-    const reportedAddresses: string[] = [];
-    
-console.log('💳 Searching for multiple addresses in cleanReportContent...');
-console.log('💳 Full content sample:', content.substring(0, 300));
-
-const allPotentialMatches = [
-  ...content.matchAll(/([13][1-9A-HJ-NP-Za-km-z]{20,40})/g),           // Bitcoin Legacy
-  ...content.matchAll(/(bc1[02-9ac-hj-np-z]{30,70})/g),                // Bitcoin Bech32  
-  ...content.matchAll(/(ltc1[02-9ac-hj-np-z]{30,70})/g),               // Litecoin Bech32
-  ...content.matchAll(/(addr1[a-z0-9]{50,120})/g),                     // Cardano (ADA)
-  ...content.matchAll(/(0x[a-fA-F0-9]{40})/g),                      // Ethereum/Polygon/Arbitrum/Avalanche
-  ...content.matchAll(/(T[1-9A-HJ-NP-Za-km-z]{30,40})/g),              // Tron
-  ...content.matchAll(/([LM][1-9A-HJ-NP-Za-km-z]{20,40})/g),           // Litecoin Legacy
-  ...content.matchAll(/(erd1[a-z0-9]{58})/g),                          // MultiversX/Elrond (dla Hedera)
- ...content.matchAll(/([1-9A-HJ-NP-Za-km-z]{32,44})/g),               // Solana - DODAJ TO
-];
-
-console.log(`💳 Found ${allPotentialMatches.length} potential address matches`);
-
-// Zbierz wszystkie pozycje dopasowań żeby uniknąć nakładania
-const processedPositions: Array<{start: number, end: number}> = [];
-
-for (const match of allPotentialMatches) {
-  // Bezpieczne przypisanie z sprawdzeniem typu
-  const startPos = (match.index !== undefined) ? match.index : 0;
-  const endPos = startPos + match[1].length;
-  
-  // Sprawdź czy ten fragment nie nakłada się z już przetworzonymi
-  let isOverlapping = false;
-  for (const pos of processedPositions) {
-    if ((startPos >= pos.start && startPos < pos.end) || 
-        (endPos > pos.start && endPos <= pos.end)) {
-      isOverlapping = true;
-      break;
-    }
-  }
-  
-  if (isOverlapping) {
-    console.log(`💳 Skipping overlapping match: "${match[1]}" at position ${startPos}`);
-    continue;
-  }
-  
-  let rawAddress = match[1];
-  console.log(`💳 Processing raw match: "${rawAddress}" at position ${startPos}-${endPos}`);
-  
-let cleanedAddress = rawAddress;
-
-// KROK 1: Usuń tylko znane prefiksy (nie całą resztę)
-if (cleanedAddress.startsWith('ddress')) {
-  cleanedAddress = cleanedAddress.substring(6); // Usuń "ddress"
-}
-if (cleanedAddress.startsWith('Address')) {
-  cleanedAddress = cleanedAddress.substring(7); // Usuń "Address" 
-}
-if (cleanedAddress.startsWith('eported')) {
-  cleanedAddress = cleanedAddress.substring(7); // Usuń "eported"
-}
-
-// KROK 2: Usuń suffiksy - ale tylko konkretne słowa
-cleanedAddress = cleanedAddress
-  .replace(/Reported$/i, '')
-  .replace(/ReportedDomain$/i, '')
-  .replace(/ReportedAddress$/i, '')
-  .replace(/Domain$/i, '')
-  .replace(/Address$/i, '')
-  .replace(/Reporte$/i, '')
-  .replace(/Addres$/i, '')
-  .replace(/^TRC20/i, '')
-  .replace(/^USDT/i, '')
-  .replace(/^BTC/i, '')
-  .replace(/^ETH/i, '')
-  .trim();
-
-// KROK 3: Jeśli nadal nieprawidłowy, wyciągnij TYLKO pierwszy prawidłowy adres
-if (!/^(0x[a-fA-F0-9]{40}|bc1[02-9ac-hj-np-z]+|[13][1-9A-HJ-NP-Za-km-z]+|T[1-9A-HJ-NP-Za-km-z]+|[LM][1-9A-HJ-NP-Za-km-z]+|addr1[a-z0-9]+)$/.test(cleanedAddress)) {
-  const match = cleanedAddress.match(/(0x[a-fA-F0-9]{40}|bc1[02-9ac-hj-np-z]{39,62}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|T[1-9A-HJ-NP-Za-km-z]{33}|[LM][1-9A-HJ-NP-Za-km-z]{26,34}|addr1[a-z0-9]{53,103})/);
-  if (match) {
-    cleanedAddress = match[1];
-  }
-}
-    
-  console.log(`💳 Cleaned address: "${cleanedAddress}"`);
-  
-let isValidAddress = false;
-let addressType = '';
-
-if (/^bc1[02-9ac-hj-np-z]{38,61}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Bitcoin Bech32';
-} else if (/^ltc1[02-9ac-hj-np-z]{38,61}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Litecoin Bech32';
-} else if (/^addr1[a-z0-9]{50,120}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Cardano (ADA)';
-} else if (/^[13][1-9A-HJ-NP-Za-km-z]{24,33}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Bitcoin Legacy';
-} else if (/^0x[a-fA-F0-9]{40}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  // Określ typ na podstawie kontekstu - wszystkie używają tego samego formatu
-  if (content.toLowerCase().includes('polygon') || content.toLowerCase().includes('matic')) {
-    addressType = 'Polygon (MATIC)';
-  } else if (content.toLowerCase().includes('arbitrum')) {
-    addressType = 'Arbitrum';
-  } else if (content.toLowerCase().includes('avalanche') || content.toLowerCase().includes('avax')) {
-    addressType = 'Avalanche (AVAX)';
-  } else if (content.toLowerCase().includes('base')) {
-    addressType = 'Base';
-  } else {
-    addressType = 'Ethereum'; // Domyślnie Ethereum
-  }
-} else if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Tron';
-} else if (/^[LM][1-9A-HJ-NP-Za-km-z]{25,33}$/.test(cleanedAddress)) {
-  isValidAddress = true;
-  addressType = 'Litecoin Legacy';
-} else if (/^0\.0\.[0-9]+$/.test(cleanedAddress)) {
-  // Hedera używa formatu 0.0.123456
-  isValidAddress = true;
-  addressType = 'Hedera (HBAR)';
-} else if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanedAddress) && 
-           !cleanedAddress.startsWith('1') && 
-           !cleanedAddress.startsWith('3') && 
-           !cleanedAddress.startsWith('L') && 
-           !cleanedAddress.startsWith('M') && 
-           !cleanedAddress.startsWith('T')) {
-  // Solana, Base58 format - ale nie inne znane formaty
-} else if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanedAddress) && 
-           !cleanedAddress.startsWith('1') && 
-           !cleanedAddress.startsWith('3') && 
-           !cleanedAddress.startsWith('L') && 
-           !cleanedAddress.startsWith('M') && 
-           !cleanedAddress.startsWith('T')) {
-  // Solana uses Base58, 32-44 characters
-  isValidAddress = true;
-  addressType = 'Solana (SOL)';
-}
-  
-  console.log(`💳 Validation: ${cleanedAddress} is ${isValidAddress ? 'VALID' : 'INVALID'} ${addressType}`);
-  
-  if (isValidAddress && 
-    cleanedAddress.length >= 25 && 
-    !reportedAddresses.includes(cleanedAddress)) {
-  
-  // NOWY: Sprawdź czy nowy adres nie jest fragmentem już dodanego adresu
-  let isDuplicateFragment = false;
-  
-  for (const existingAddress of reportedAddresses) {
-    // Sprawdź czy nowy adres jest fragmentem istniejącego
-    if (existingAddress.includes(cleanedAddress) && existingAddress !== cleanedAddress) {
-      console.log(`💳 Skipping fragment: "${cleanedAddress}" is part of "${existingAddress}"`);
-      isDuplicateFragment = true;
-      break;
-    }
-    
-    // Sprawdź czy istniejący adres jest fragmentem nowego (zamień go)
-    if (cleanedAddress.includes(existingAddress) && existingAddress !== cleanedAddress) {
-      console.log(`💳 Replacing fragment: "${existingAddress}" with full address "${cleanedAddress}"`);
-      const index = reportedAddresses.indexOf(existingAddress);
-      reportedAddresses[index] = cleanedAddress;
-      isDuplicateFragment = true;
-      break;
-    }
-  }
-  
-  if (!isDuplicateFragment) {
-    reportedAddresses.push(cleanedAddress);
-    console.log(`✅ Added ${addressType} address: ${cleanedAddress}`);
-    processedPositions.push({ start: startPos, end: endPos });
-  }
-} else if (!isValidAddress) {
-  console.log(`❌ Rejected invalid address: ${cleanedAddress}`);
-} else {
-  console.log(`⚠️ Skipped duplicate address: ${cleanedAddress}`);
-}
-}
-    
-    console.log(`💳 Total addresses found in cleanReportContent: ${reportedAddresses.length}`);
+// STEP 5: ZMIENIONE - Extract adresy TYLKO z fragmentu po "Amount Lost"
+const reportedAddresses = this.extractAddressesAfterAmountLost(content);
     
     // STEP 6: COMPREHENSIVE CONTENT CLEANING
     let cleanContent = content
@@ -1554,7 +1325,7 @@ private isAmountUSDSignificant(amountLostString: string): boolean {
   console.log(`💰 Parsed USD amount: $${amount.toFixed(2)}`);
 
   // Sprawdź czy >= $10,000
-  const isSignificant = amount >= 1;
+  const isSignificant = amount >= 10000;
 
   console.log(`💰 Amount ${isSignificant ? 'IS' : 'IS NOT'} significant (>= $10,000 USD)`);
 
@@ -2006,12 +1777,19 @@ private isAmountUSDSignificant(amountLostString: string): boolean {
     linkText = 'View Reports Page';
     linkInfo = `\n⚠️ <i>Direct link unavailable</i>`;
   }
-  
+  // Dodaj link do log file w wiadomości  
+const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+
   message += linkInfo +
             `\n\n🔗 <a href="${actualReportUrl}">${linkText}</a>\n\n` +
+            `\n📝 <a href="${baseUrl}/api/addresses">View All Addresses</a>\n\n` +
             `📊 ${currentTime.toLocaleString('en-US')}`;
 
   await this.sendTelegramMessage(message);
+
+if (finalAddresses.length > 0) {
+  this.saveAddressesToFile(finalAddresses);
+}
 
   this.sentReportHashes.add(newReport.contentHash);
   console.log(`✅ Report sent: hash=${newReport.contentHash.substring(0, 8)}, URL=${actualReportUrl}`);
